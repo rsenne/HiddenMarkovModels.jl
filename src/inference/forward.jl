@@ -158,3 +158,157 @@ function forward(
     forward!(storage, hmm, obs_seq, control_seq; seq_ends, error_if_not_finite)
     return storage.α, storage.logL
 end
+
+#=
+HSMM Implementations
+=#
+"""
+$(TYPEDEF)
+
+Storage for HSMM forward algorithm results.
+
+# Fields
+
+$(TYPEDFIELDS)
+"""
+struct HSMMForwardStorage{R}
+    "forward probabilities α[i,d,t] = P(X[t]=i, D[t]=d | Y[1:t])"
+    α::Array{R,3}  # states × max_duration × time
+    "one loglikelihood per observation sequence"
+    logL::Vector{R}
+    "observation likelihoods B[i,t] = P(Y[t] | X[t]=i)"
+    B::Matrix{R}
+    "normalization constants"
+    c::Vector{R}
+    "maximum duration considered"
+    max_duration::Int
+end
+
+"""
+$(TYPEDEF)
+
+Storage for HSMM forward-backward algorithm results.
+
+# Fields
+
+$(TYPEDFIELDS) 
+"""
+struct HSMMForwardBackwardStorage{R}
+    "posterior state marginals γ[i,t] = P(X[t]=i | Y[1:T])"
+    γ::Matrix{R}
+    "posterior duration marginals δ[i,d,t] = P(X[t]=i, D[t]=d | Y[1:T])"
+    δ::Array{R,3}  # states × max_duration × time
+    "one loglikelihood per observation sequence"
+    logL::Vector{R}
+    # Forward quantities
+    α::Array{R,3}
+    B::Matrix{R}
+    c::Vector{R}
+    # Backward quantities  
+    β::Array{R,3}
+    max_duration::Int
+end
+
+Base.eltype(::HSMMForwardBackwardStorage{R}) where {R} = R
+
+"""
+$(SIGNATURES)
+
+Initialize storage for HSMM forward algorithm.
+"""
+function initialize_hsmm_forward(
+    hsmm::AbstractHSMM,
+    obs_seq::AbstractVector,
+    control_seq::AbstractVector;
+    seq_ends::AbstractVectorOrNTuple{Int},
+    max_duration::Int = 50
+)
+    N, T, K = length(hsmm), length(obs_seq), length(seq_ends)
+    R = eltype(hsmm, obs_seq[1], control_seq[1])
+    
+    α = Array{R,3}(undef, N, max_duration, T)
+    logL = Vector{R}(undef, K)
+    B = Matrix{R}(undef, N, T)
+    c = Vector{R}(undef, T)
+    
+    return HSMMForwardStorage(α, logL, B, c, max_duration)
+end
+
+function _forward!(
+    storage::HSMMForwardStorage,
+    hsmm::AbstractHSMM,
+    obs_seq::AbstractVector,
+    control_seq::AbstractVector,
+    seq_ends::AbstractVectorOrNTuple{Int},
+    k::Integer;
+    error_if_not_finite::Bool = true,
+)
+    (; α, B, c, logL, max_duration) = storage
+    t1, t2 = seq_limits(seq_ends, k)
+    N = length(hsmm)
+    
+    logL[k] = zero(eltype(logL))
+    
+    for t in t1:t2
+        # Compute observation likelihoods
+        Bₜ = view(B, :, t)
+        obs_logdensities!(Bₜ, hsmm, obs_seq[t], control_seq[t]; error_if_not_finite)
+        Bₜ .= exp.(Bₜ .- maximum(Bₜ))  # Normalize for numerical stability
+        
+        if t == t1
+            # Initialization: start in any state with duration 1
+            init = initialization(hsmm)
+            for i in 1:N
+                α[i, 1, t] = init[i] * Bₜ[i]
+                for d in 2:max_duration
+                    α[i, d, t] = zero(eltype(α))
+                end
+            end
+        else
+            # Forward recursion
+            αₜ = view(α, :, :, t)
+            αₜ₋₁ = view(α, :, :, t-1)
+            fill!(αₜ, zero(eltype(α)))
+            
+            trans = transition_matrix(hsmm, control_seq[t-1])
+            durations = duration_distributions(hsmm, control_seq[t])
+            
+            for i in 1:N
+                for d in 1:max_duration
+                    # Case 1: Continue in same state (increment duration)
+                    if d > 1 && d <= max_duration
+                        duration_prob = pdf(durations[i], d)
+                        survival_prob = ccdf(durations[i], d-1)  # P(D >= d-1)
+                        if survival_prob > 0
+                            α[i, d, t] += αₜ₋₁[i, d-1] * (1 - duration_prob/survival_prob)
+                        end
+                    end
+                    
+                    # Case 2: Transition from other states (start duration = 1)
+                    if d == 1
+                        for j in 1:N
+                            if i != j  # No self-transitions in HSMM
+                                # Sum over all possible durations that just ended
+                                for d_prev in 1:max_duration
+                                    duration_prob = pdf(durations[j], d_prev)
+                                    α[i, d, t] += αₜ₋₁[j, d_prev] * trans[j, i] * duration_prob
+                                end
+                            end
+                        end
+                    end
+                    
+                    α[i, d, t] *= Bₜ[i]
+                end
+            end
+        end
+        
+        # Normalization
+        total_prob = sum(α[:, :, t])
+        c[t] = inv(total_prob)
+        α[:, :, t] .*= c[t]
+        logL[k] += -log(c[t])
+    end
+    
+    error_if_not_finite && @argcheck isfinite(logL[k])
+    return nothing
+end
