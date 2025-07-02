@@ -35,3 +35,45 @@ function valid_hmm(hmm::AbstractHMM, control=nothing)
     end
     return true
 end
+
+
+"""
+    valid_hsmm(hsmm, control=nothing)
+
+Perform validation checks specific to HSMMs.
+"""
+function valid_hsmm(hsmm::AbstractHSMM, control=nothing)
+    # Basic HMM validation
+    if !valid_hmm(hsmm, control)
+        return false
+    end
+    
+    # HSMM-specific checks
+    init = initialization(hsmm)
+    trans = transition_matrix(hsmm, control)
+    dists = obs_distributions(hsmm, control)
+    durations = duration_distributions(hsmm, control)
+    
+    # Check dimensions match
+    if length(durations) != length(init)
+        return false
+    end
+    
+    # Check no self-transitions (HSMMs don't allow them)
+    for i in 1:length(hsmm)
+        if trans[i, i] > 1e-10  # Allow for numerical precision
+            return false
+        end
+    end
+    
+    # Check duration distributions are valid
+    for dur_dist in durations
+        if DensityKind(dur_dist) == NoDensity()
+            return false
+        end
+        # Could add more specific duration distribution checks here
+        # e.g., support should be positive integers
+    end
+    
+    return true
+end
