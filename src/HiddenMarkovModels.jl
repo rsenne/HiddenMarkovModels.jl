@@ -14,6 +14,7 @@ using Base: RefValue
 using Base.Threads: @threads
 using ChainRulesCore: ChainRulesCore, NoTangent, RuleConfig, rrule_via_ad
 using DensityInterface: DensityInterface, DensityKind, HasDensity, NoDensity, logdensityof
+using Distributions
 using DocStringExtensions
 using FillArrays: Fill
 using LinearAlgebra: Transpose, axpy!, dot, ldiv!, lmul!, mul!, parent
@@ -22,7 +23,7 @@ using SparseArrays: AbstractSparseArray, SparseMatrixCSC, nonzeros, nnz, nzrange
 using StatsAPI: StatsAPI, fit, fit!
 using StatsFuns: log2π
 
-export AbstractHMM, HMM
+export AbstractHMM, HMM, AbstractHSMM, HSMM
 export initialization, transition_matrix, obs_distributions
 export fit!, logdensityof, joint_logdensityof
 export viterbi, forward, forward_backward, baum_welch

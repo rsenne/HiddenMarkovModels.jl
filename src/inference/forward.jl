@@ -250,65 +250,122 @@ function _forward!(
     logL[k] = zero(eltype(logL))
     
     for t in t1:t2
-        # Compute observation likelihoods
+        # Compute observation likelihoods in log space for stability
         Bₜ = view(B, :, t)
         obs_logdensities!(Bₜ, hsmm, obs_seq[t], control_seq[t]; error_if_not_finite)
-        Bₜ .= exp.(Bₜ .- maximum(Bₜ))  # Normalize for numerical stability
+        
+        # Convert to probabilities with max normalization
+        logmax = maximum(Bₜ)
+        Bₜ .= exp.(Bₜ .- logmax)
         
         if t == t1
-            # Initialization: start in any state with duration 1
+            # === INITIALIZATION ===
             init = initialization(hsmm)
             for i in 1:N
                 α[i, 1, t] = init[i] * Bₜ[i]
+                # Initialize all other durations to zero
                 for d in 2:max_duration
                     α[i, d, t] = zero(eltype(α))
                 end
             end
         else
-            # Forward recursion
+            # === FORWARD RECURSION ===
             αₜ = view(α, :, :, t)
             αₜ₋₁ = view(α, :, :, t-1)
             fill!(αₜ, zero(eltype(α)))
             
-            trans = transition_matrix(hsmm, control_seq[t-1])
+            # Get model parameters for this time step
+            # Note: control at time t-1 affects transition from t-1 to t
+            trans = transition_matrix(hsmm, control_seq[t-1]) 
             durations = duration_distributions(hsmm, control_seq[t])
             
             for i in 1:N
                 for d in 1:max_duration
-                    # Case 1: Continue in same state (increment duration)
-                    if d > 1 && d <= max_duration
-                        duration_prob = pdf(durations[i], d)
-                        survival_prob = ccdf(durations[i], d-1)  # P(D >= d-1)
-                        if survival_prob > 0
-                            α[i, d, t] += αₜ₋₁[i, d-1] * (1 - duration_prob/survival_prob)
+                    
+                    # === CASE 1: CONTINUE IN SAME STATE ===
+                    # We were in state i with duration d-1 at time t-1
+                    # and we continue to stay in state i
+                    if d > 1
+                        # Probability of continuing: P(Duration ≥ d | Duration ≥ d-1)
+                        ccdf_d_minus_1 = ccdf(durations[i], d-1)
+                        ccdf_d = ccdf(durations[i], d)
+                        
+                        if ccdf_d_minus_1 > 0
+                            continue_prob = ccdf_d / ccdf_d_minus_1
+                            α[i, d, t] += αₜ₋₁[i, d-1] * continue_prob
                         end
                     end
                     
-                    # Case 2: Transition from other states (start duration = 1)
+                    # === CASE 2: ENTER FROM ANOTHER STATE ===
+                    # We transition into state i from some other state j
+                    # This can only happen with duration d = 1 (just entered)
                     if d == 1
                         for j in 1:N
                             if i != j  # No self-transitions in HSMM
-                                # Sum over all possible durations that just ended
+                                # Sum over all durations that could end at time t-1
+                                enter_contribution = zero(eltype(α))
                                 for d_prev in 1:max_duration
-                                    duration_prob = pdf(durations[j], d_prev)
-                                    α[i, d, t] += αₜ₋₁[j, d_prev] * trans[j, i] * duration_prob
+                                    # Probability that state j ends after exactly d_prev steps
+                                    end_prob = pdf(durations[j], d_prev)
+                                    enter_contribution += αₜ₋₁[j, d_prev] * end_prob
                                 end
+                                
+                                # Apply transition probability
+                                α[i, d, t] += enter_contribution * trans[j, i]
                             end
                         end
                     end
                     
+                    # === APPLY OBSERVATION LIKELIHOOD ===
                     α[i, d, t] *= Bₜ[i]
                 end
             end
         end
         
-        # Normalization
+        # === NORMALIZATION ===
         total_prob = sum(α[:, :, t])
-        c[t] = inv(total_prob)
-        α[:, :, t] .*= c[t]
-        logL[k] += -log(c[t])
+        if total_prob > 0
+            c[t] = inv(total_prob)
+            α[:, :, t] .*= c[t]
+            logL[k] += -log(c[t]) + logmax  # Add back the log normalization
+        else
+            # Handle degenerate case
+            c[t] = one(eltype(c))
+            logL[k] += -Inf
+        end
     end
     
     error_if_not_finite && @argcheck isfinite(logL[k])
     return nothing
+end
+
+"""
+$(SIGNATURES)
+
+Apply the forward algorithm to infer the current state after sequence `obs_seq` for `hsmm`.
+
+Return a tuple `(storage.α, storage.logL)` where `storage` is of type [`HSMMForwardStorage`](@ref).
+The forward probabilities are α[i,d,t] = P(X[t]=i, D[t]=d | Y[1:t]).
+"""
+function forward(
+    hsmm::AbstractHSMM,
+    obs_seq::AbstractVector,
+    control_seq::AbstractVector=Fill(nothing, length(obs_seq));
+    seq_ends::AbstractVectorOrNTuple{Int}=(length(obs_seq),),
+    max_duration::Int=50,
+    error_if_not_finite::Bool=true,
+)
+    storage = initialize_hsmm_forward(hsmm, obs_seq, control_seq; seq_ends, max_duration)
+    
+    if seq_ends isa NTuple{1}
+        for k in eachindex(seq_ends)
+            _forward!(storage, hsmm, obs_seq, control_seq, seq_ends, k; error_if_not_finite)
+        end
+    else
+        @threads for k in eachindex(seq_ends)
+            _forward!(storage, hsmm, obs_seq, control_seq, seq_ends, k; error_if_not_finite)
+        end
+    end
+    
+    return storage.α, storage.logL
 end
