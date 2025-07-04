@@ -193,11 +193,13 @@ Storage for HSMM forward-backward algorithm results.
 
 $(TYPEDFIELDS) 
 """
-struct HSMMForwardBackwardStorage{R}
+struct HSMMForwardBackwardStorage{R,M<:AbstractMatrix{R}}
     "posterior state marginals γ[i,t] = P(X[t]=i | Y[1:T])"
     γ::Matrix{R}
     "posterior duration marginals δ[i,d,t] = P(X[t]=i, D[t]=d | Y[1:T])"
     δ::Array{R,3}  # states × max_duration × time
+    "posterior transition marginals ξ[t][i,j] = P(transition from i to j at time t | Y[1:T])"
+    ξ::Vector{M}  # Essential for parameter learning
     "one loglikelihood per observation sequence"
     logL::Vector{R}
     # Forward quantities
@@ -210,6 +212,10 @@ struct HSMMForwardBackwardStorage{R}
 end
 
 Base.eltype(::HSMMForwardBackwardStorage{R}) where {R} = R
+
+const HSMMForwardOrHSMMForwardBackwardStorage{R} = Union{
+    HSMMForwardStorage{R}, HSMMForwardBackwardStorage{R}
+}
 
 """
 $(SIGNATURES)
@@ -235,7 +241,7 @@ function initialize_hsmm_forward(
 end
 
 function _forward!(
-    storage::HSMMForwardStorage,
+    storage::HSMMForwardOrHSMMForwardBackwardStorage,
     hsmm::AbstractHSMM,
     obs_seq::AbstractVector,
     control_seq::AbstractVector,

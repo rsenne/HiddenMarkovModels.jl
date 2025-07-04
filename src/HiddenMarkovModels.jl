@@ -24,12 +24,15 @@ using StatsAPI: StatsAPI, fit, fit!
 using StatsFuns: log2π
 
 export AbstractHMM, HMM, AbstractHSMM, HSMM
+export GeometricDuration, PoissonDuration, NegBinomialDuration
 export initialization, transition_matrix, obs_distributions
 export fit!, logdensityof, joint_logdensityof
 export viterbi, forward, forward_backward, baum_welch
 export seq_limits
 
 include("types/abstract_hmm.jl")
+include("types/abstract_hsmm.jl")
+include("types/durationdists.jl")
 
 include("utils/linalg.jl")
 include("utils/valid.jl")
@@ -48,5 +51,6 @@ include("inference/logdensity.jl")
 include("inference/chainrules.jl")
 
 include("types/hmm.jl")
+include("types/hsmm.jl")
 
 end

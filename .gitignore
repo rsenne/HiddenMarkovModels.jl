@@ -28,3 +28,4 @@ scratchpad.jl
 
 *.pdf
 *.svg
+/notebooks

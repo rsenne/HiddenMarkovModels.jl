@@ -21,7 +21,7 @@ Parameters:
 
 Mean duration: 1/p
 """
-struct GeometricDuration{T<:Real} <: DiscreteUnivariateDistribution
+mutable struct GeometricDuration{T<:Real} <: DiscreteUnivariateDistribution
     p::T
     
     function GeometricDuration(p::T) where T
@@ -66,7 +66,7 @@ Parameters:
 
 Mean duration: λ + 1
 """
-struct PoissonDuration{T<:Real} <: DiscreteUnivariateDistribution
+mutable struct PoissonDuration{T<:Real} <: DiscreteUnivariateDistribution
     λ::T
     
     function PoissonDuration(λ::T) where T

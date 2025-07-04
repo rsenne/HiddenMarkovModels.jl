@@ -118,3 +118,198 @@ function forward_backward(
     forward_backward!(storage, hmm, obs_seq, control_seq; seq_ends, transition_marginals)
     return storage.γ, storage.logL
 end
+
+#=
+HSMM implementations
+=#
+"""
+$(SIGNATURES)
+"""
+function initialize_forward_backward(
+    hsmm::AbstractHSMM,
+    obs_seq::AbstractVector,
+    control_seq::AbstractVector;
+    seq_ends::AbstractVectorOrNTuple{Int},
+    max_duration::Int=50,
+    transition_marginals::Bool=true,
+)
+    N, T, K = length(hsmm), length(obs_seq), length(seq_ends)
+    R = eltype(hsmm, obs_seq[1], control_seq[1])
+    trans = transition_matrix(hsmm, control_seq[1])
+    M = typeof(similar(trans, R))
+
+    γ = Matrix{R}(undef, N, T)
+    δ = Array{R,3}(undef, N, max_duration, T)
+    ξ = Vector{M}(undef, T)
+    if transition_marginals
+        for t in 1:(T - 1)
+            ξ[t] = similar(transition_matrix(hsmm, control_seq[t + 1]), R)
+        end
+        ξ[T] = zero(trans)  # not used
+    end
+    logL = Vector{R}(undef, K)
+    B = Matrix{R}(undef, N, T)
+    α = Array{R,3}(undef, N, max_duration, T)
+    c = Vector{R}(undef, T)
+    β = Array{R,3}(undef, N, max_duration, T)
+
+    return HSMMForwardBackwardStorage{R,M}(γ, δ, ξ, logL, α, B, c, β, max_duration)
+end
+
+function _forward_backward!(
+    storage::HSMMForwardBackwardStorage{R},
+    hsmm::AbstractHSMM,
+    obs_seq::AbstractVector,
+    control_seq::AbstractVector,
+    seq_ends::AbstractVectorOrNTuple{Int},
+    k::Integer;
+    transition_marginals::Bool=true,
+) where {R}
+    (; α, β, c, γ, δ, ξ, B, max_duration) = storage
+    t1, t2 = seq_limits(seq_ends, k)
+
+    # Forward (fill B, α, c and logL)
+    _forward!(storage, hsmm, obs_seq, control_seq, seq_ends, k; error_if_not_finite=true)
+
+    # Backward
+    # Initialize at final time
+    for i in 1:length(hsmm), d in 1:max_duration
+        β[i, d, t2] = c[t2]
+    end
+    
+    for t in (t2 - 1):-1:t1
+        # Clear current time step
+        β[:, :, t] .= zero(R)
+        
+        # Get model parameters
+        trans = transition_matrix(hsmm, control_seq[t + 1])
+        durations = duration_distributions(hsmm, control_seq[t + 1])
+        
+        for i in 1:length(hsmm)
+            for d in 1:max_duration
+                
+                # Case 1: Continue in same state (d -> d+1)
+                if d < max_duration
+                    ccdf_d = ccdf(durations[i], d)
+                    ccdf_d_plus_1 = ccdf(durations[i], d+1)
+                    
+                    if ccdf_d > 0
+                        continue_prob = ccdf_d_plus_1 / ccdf_d
+                        β[i, d, t] += continue_prob * B[i, t+1] * β[i, d+1, t+1]
+                    end
+                end
+                
+                # Case 2: Transition from this state to another state
+                if d > 0
+                    end_prob = pdf(durations[i], d)
+                    
+                    for j in 1:length(hsmm)
+                        if i != j  # No self-transitions in HSMM
+                            β[i, d, t] += end_prob * trans[i, j] * B[j, t+1] * β[j, 1, t+1]
+                        end
+                    end
+                end
+            end
+        end
+        
+        # Apply normalization
+        β[:, :, t] .*= c[t]
+    end
+
+    # State marginals: γ[i,t] = Σ_d α[i,d,t] * β[i,d,t] / c[t]
+    for t in t1:t2
+        for i in 1:length(hsmm)
+            γ[i, t] = zero(R)
+            for d in 1:max_duration
+                γ[i, t] += α[i, d, t] * β[i, d, t]
+            end
+            γ[i, t] /= c[t]
+        end
+    end
+
+    # State-duration marginals: δ[i,d,t] = α[i,d,t] * β[i,d,t] / c[t]
+    for t in t1:t2
+        for i in 1:length(hsmm)
+            for d in 1:max_duration
+                δ[i, d, t] = α[i, d, t] * β[i, d, t] / c[t]
+            end
+        end
+    end
+
+    # Transition marginals: ξ[t][i,j] = P(transition from i to j at time t | Y[1:T])
+    if transition_marginals
+        for t in t1:(t2 - 1)
+            fill!(ξ[t], zero(R))
+            trans = transition_matrix(hsmm, control_seq[t])
+            durations = duration_distributions(hsmm, control_seq[t])
+            
+            for i in 1:length(hsmm)
+                for j in 1:length(hsmm)
+                    if i != j  # No self-transitions in HSMM
+                        # Sum over all durations that could end at time t
+                        for d in 1:max_duration
+                            if α[i, d, t] > 0 && β[j, 1, t+1] > 0
+                                # Probability that duration d ends at time t
+                                end_prob = pdf(durations[i], d)
+                                # Complete transition probability
+                                ξ[t][i, j] += α[i, d, t] * end_prob * trans[i, j] * B[j, t+1] * β[j, 1, t+1] / c[t]
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        ξ[t2] .= zero(R)
+    end
+
+    return nothing
+end
+
+"""
+$(SIGNATURES)
+"""
+function forward_backward!(
+    storage::HSMMForwardBackwardStorage,
+    hsmm::AbstractHSMM,
+    obs_seq::AbstractVector,
+    control_seq::AbstractVector;
+    seq_ends::AbstractVectorOrNTuple{Int},
+    transition_marginals::Bool=true,
+)
+    if seq_ends isa NTuple{1}
+        for k in eachindex(seq_ends)
+            _forward_backward!(
+                storage, hsmm, obs_seq, control_seq, seq_ends, k; transition_marginals
+            )
+        end
+    else
+        @threads for k in eachindex(seq_ends)
+            _forward_backward!(
+                storage, hsmm, obs_seq, control_seq, seq_ends, k; transition_marginals
+            )
+        end
+    end
+    return nothing
+end
+
+"""
+$(SIGNATURES)
+
+Apply the forward-backward algorithm to infer the posterior state and transition marginals during sequence `obs_seq` for `hsmm`.
+
+Return a tuple `(storage.γ, storage.logL)` where `storage` is of type [`HSMMForwardBackwardStorage`](@ref).
+"""
+function forward_backward(
+    hsmm::AbstractHSMM,
+    obs_seq::AbstractVector,
+    control_seq::AbstractVector=Fill(nothing, length(obs_seq));
+    seq_ends::AbstractVectorOrNTuple{Int}=(length(obs_seq),),
+    max_duration::Int=50,
+)
+    transition_marginals = false
+    storage = initialize_forward_backward(
+        hsmm, obs_seq, control_seq; seq_ends, max_duration, transition_marginals
+    )
+    forward_backward!(storage, hsmm, obs_seq, control_seq; seq_ends, transition_marginals)
+    return storage.γ, storage.logL
+end
