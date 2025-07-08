@@ -76,4 +76,8 @@ end
     @testset verbose = true "Miscellaneous" begin
         include("misc.jl")
     end
+
+    @testset verbose = true "HSMM Correctness - $TEST_SUITE" begin
+        include("hsmm_correctness.jl")
+    end
 end

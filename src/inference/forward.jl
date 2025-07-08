@@ -347,6 +347,29 @@ end
 
 """
 $(SIGNATURES)
+"""
+function forward!(
+    storage::HSMMForwardOrHSMMForwardBackwardStorage,
+    hsmm::AbstractHSMM,
+    obs_seq::AbstractVector,
+    control_seq::AbstractVector;
+    seq_ends::AbstractVectorOrNTuple{Int},
+    error_if_not_finite::Bool=true,
+)
+    if seq_ends isa NTuple{1}
+        for k in eachindex(seq_ends)
+            _forward!(storage, hsmm, obs_seq, control_seq, seq_ends, k; error_if_not_finite)
+        end
+    else
+        @threads for k in eachindex(seq_ends)
+            _forward!(storage, hsmm, obs_seq, control_seq, seq_ends, k; error_if_not_finite)
+        end
+    end
+    return nothing
+end
+
+"""
+$(SIGNATURES)
 
 Apply the forward algorithm to infer the current state after sequence `obs_seq` for `hsmm`.
 
@@ -362,16 +385,6 @@ function forward(
     error_if_not_finite::Bool=true,
 )
     storage = initialize_hsmm_forward(hsmm, obs_seq, control_seq; seq_ends, max_duration)
-    
-    if seq_ends isa NTuple{1}
-        for k in eachindex(seq_ends)
-            _forward!(storage, hsmm, obs_seq, control_seq, seq_ends, k; error_if_not_finite)
-        end
-    else
-        @threads for k in eachindex(seq_ends)
-            _forward!(storage, hsmm, obs_seq, control_seq, seq_ends, k; error_if_not_finite)
-        end
-    end
-    
+    forward!(storage, hsmm, obs_seq, control_seq; seq_ends, error_if_not_finite)
     return storage.α, storage.logL
 end
