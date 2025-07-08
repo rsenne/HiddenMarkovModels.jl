@@ -98,7 +98,7 @@ function test_hsmm_allocations(rng, hsmm, control_seq; seq_ends, hsmm_guess=noth
     storage = HMMs.initialize_hsmm_forward(hsmm, obs_seq, control_seq; seq_ends, max_duration)
     
     # Test that pre-allocated forward doesn't allocate much
-    allocs = @allocated forward!(storage, hsmm, obs_seq, control_seq; seq_ends)
+    allocs = @allocated HMMs.forward!(storage, hsmm, obs_seq, control_seq; seq_ends)
     @test allocs < 1000  # Should be minimal allocations
     
     return true
