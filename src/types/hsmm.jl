@@ -67,15 +67,92 @@ log_transition_matrix(hsmm::HSMM) = hsmm.logtrans
 obs_distributions(hsmm::HSMM) = hsmm.dists
 duration_distributions(hsmm::HSMM) = hsmm.durations
 
-## Fitting (will need to be implemented later for HSMM EM algorithm)
-
 function StatsAPI.fit!(
     hsmm::HSMM,
     fb_storage::HSMMForwardBackwardStorage,
     obs_seq::AbstractVector;
     seq_ends::AbstractVectorOrNTuple{Int},
 )
-    # TODO: Implement HSMM-specific Baum-Welch
-    # This is more complex than HMM fitting due to duration modeling
-    error("HSMM fitting not yet implemented")
+    (; γ, δ, ξ) = fb_storage
+    
+    # === UPDATE INITIAL STATE PROBABILITIES ===
+    fill!(hsmm.init, zero(eltype(hsmm.init)))
+    for k in eachindex(seq_ends)
+        t1, t2 = seq_limits(seq_ends, k)
+        # Sum over all durations at initial time
+        for i in 1:length(hsmm)
+            hsmm.init[i] += sum(δ[i, :, t1])
+        end
+    end
+    sum_to_one!(hsmm.init)
+    
+    # === UPDATE TRANSITION PROBABILITIES ===
+    fill!(hsmm.trans, zero(eltype(hsmm.trans)))
+    for k in eachindex(seq_ends)
+        t1, t2 = seq_limits(seq_ends, k)
+        # Sum transition marginals over time
+        for t in t1:(t2-1)
+            hsmm.trans .+= ξ[t]
+        end
+    end
+    # Normalize rows (no self-transitions, so diagonal should remain 0)
+    foreach(sum_to_one!, eachrow(hsmm.trans))
+    
+    # === UPDATE OBSERVATION DISTRIBUTIONS ===
+    for i in 1:length(hsmm)
+        # Collect weights for state i (sum over all durations)
+        weights = vec(sum(γ[i:i, :], dims=1))  # Sum over durations
+        fit_in_sequence!(hsmm.dists, i, obs_seq, weights)
+    end
+    
+    # === UPDATE DURATION DISTRIBUTIONS ===
+    for i in 1:length(hsmm)
+        # Collect duration samples and weights for state i
+        # We use the state-duration marginals δ[i,d,t] as weights
+        durations = Int[]
+        weights = Float64[]
+        
+        # For each possible duration, collect its total weight across all times
+        for d in axes(δ, 2)  # max_duration
+            total_weight = 0.0
+            
+            for k in eachindex(seq_ends)
+                t1, t2 = seq_limits(seq_ends, k)
+                for t in t1:t2
+                    total_weight += δ[i, d, t]
+                end
+            end
+            
+            # Only include durations with significant weight
+            if total_weight > 1e-10
+                push!(durations, d)
+                push!(weights, total_weight)
+            end
+        end
+        
+        # Fit duration distribution if we have data
+        if !isempty(durations)
+            fit!(hsmm.durations[i], durations, weights)
+        end
+    end
+    
+    # === UPDATE LOG VERSIONS ===
+    hsmm.loginit .= log.(hsmm.init)
+    mynonzeros(hsmm.logtrans) .= log.(mynonzeros(hsmm.trans))
+    
+    # === SAFETY CHECK ===
+    @argcheck valid_hsmm(hsmm)
+    
+    return nothing
+end
+
+# currently do not have control worked out
+function StatsAPI.fit!(
+    hsmm::HSMM,
+    fb_storage::HSMMForwardBackwardStorage,
+    obs_seq::AbstractVector,
+    control_seq::AbstractVector;
+    seq_ends::AbstractVectorOrNTuple{Int},
+)
+    return fit!(hsmm, fb_storage, obs_seq; seq_ends)
 end

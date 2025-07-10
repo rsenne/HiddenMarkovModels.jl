@@ -89,3 +89,39 @@ function StatsAPI.fit!(
 )
     return fit!(hmm, fb_storage, obs_seq; seq_ends)
 end
+
+# Add HSMM-specific baum_welch function
+function baum_welch(
+    hsmm_guess::AbstractHSMM,
+    obs_seq::AbstractVector,
+    control_seq::AbstractVector=Fill(nothing, length(obs_seq));
+    seq_ends::AbstractVectorOrNTuple{Int}=(length(obs_seq),),
+    max_duration::Int=50,
+    atol=1e-5,
+    max_iterations=100,
+    loglikelihood_increasing=true,
+)
+    hsmm = deepcopy(hsmm_guess)
+    fb_storage = initialize_forward_backward(hsmm, obs_seq, control_seq; seq_ends, max_duration)
+    logL_evolution = eltype(fb_storage)[]
+    sizehint!(logL_evolution, max_iterations)
+    
+    for iteration in 1:max_iterations
+        # E-step: Forward-backward
+        forward_backward!(fb_storage, hsmm, obs_seq, control_seq; seq_ends)
+        
+        # Compute log-likelihood
+        current_logL = logdensityof(hsmm) + sum(fb_storage.logL)
+        push!(logL_evolution, current_logL)
+        
+        # M-step: Update parameters
+        fit!(hsmm, fb_storage, obs_seq; seq_ends)
+        
+        # Check convergence
+        if baum_welch_has_converged(logL_evolution; atol, loglikelihood_increasing)
+            break
+        end
+    end
+    
+    return hsmm, logL_evolution
+end
