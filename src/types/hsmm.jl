@@ -112,30 +112,17 @@ function StatsAPI.fit!(
     
     # === UPDATE DURATION DISTRIBUTIONS ===
     for i in 1:length(hsmm)
-        # Collect duration samples and weights for state i
-        # We use the state-duration marginals δ[i,d,t] as weights
         durations = Int[]
         weights = Float64[]
         
-        # For each possible duration, collect its total weight across all times
-        for d in axes(δ, 2)  # max_duration
-            total_weight = 0.0
-            
-            for k in eachindex(seq_ends)
-                t1, t2 = seq_limits(seq_ends, k)
-                for t in t1:t2
-                    total_weight += δ[i, d, t]
-                end
-            end
-            
-            # Only include durations with significant weight
-            if total_weight > 1e-10
+        for d in axes(δ, 2), t in axes(δ, 3)
+            w = δ[i, d, t]
+            if w > 0
                 push!(durations, d)
-                push!(weights, total_weight)
+                push!(weights, w)
             end
         end
-        
-        # Fit duration distribution if we have data
+
         if !isempty(durations)
             fit!(hsmm.durations[i], durations, weights)
         end

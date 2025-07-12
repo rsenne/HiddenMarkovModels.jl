@@ -65,15 +65,19 @@ function Random.rand(rng::AbstractRNG, hsmm::AbstractHSMM, control_seq::Abstract
     T = length(control_seq)
     N = length(hsmm)
     
-    # Initialize sequences
-    state_seq = Vector{Int}(undef, T)
-    obs_seq = Vector{Any}(undef, T)
-    duration_seq = Vector{Int}(undef, T)
-    
     # Start in initial state
     init = initialization(hsmm)
     dummy_log_probas = fill(-Inf, N)
     current_state = rand(rng, LightCategorical(init, dummy_log_probas))
+    
+    # Generate first observation to determine type, then initialize properly-typed vectors
+    obs_dists = obs_distributions(hsmm, control_seq[1])
+    first_obs = rand(rng, obs_dists[current_state])
+    
+    # Initialize sequences with proper types
+    state_seq = Vector{Int}(undef, T)
+    obs_seq = Vector{typeof(first_obs)}(undef, T)  # Use concrete type!
+    duration_seq = Vector{Int}(undef, T)
     
     t = 1
     while t <= T
@@ -85,16 +89,19 @@ function Random.rand(rng::AbstractRNG, hsmm::AbstractHSMM, control_seq::Abstract
         end_time = min(t + current_duration - 1, T)
         for τ in t:end_time
             state_seq[τ] = current_state
-            duration_seq[τ] = τ - t + 1  # How long we've been in this state
+            duration_seq[τ] = current_duration
             
             # Generate observation
             obs_dists = obs_distributions(hsmm, control_seq[τ])
-            obs_seq[τ] = rand(rng, obs_dists[current_state])
+            if τ == 1
+                obs_seq[τ] = first_obs
+            else
+                obs_seq[τ] = rand(rng, obs_dists[current_state])
+            end
         end
         
         t = end_time + 1
         
-        # Transition to next state (if not at end)
         if t <= T
             trans = transition_matrix(hsmm, control_seq[t-1])
             # Note: no self-transitions in HSMM

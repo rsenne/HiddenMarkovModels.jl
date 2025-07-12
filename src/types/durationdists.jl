@@ -1,8 +1,6 @@
 """
 Duration distributions for HSMMs with support on {1,2,3,...}.
 
-These are thin wrappers around Distributions.jl types that provide the correct
-support for HSMM duration modeling while maintaining a clean interface.
 """
 
 using Distributions
@@ -32,10 +30,15 @@ end
 
 Base.show(io::IO, d::GeometricDuration) = print(io, "GeometricDuration(p=$(d.p))")
 
-# Distributions.jl interface
 Distributions.pdf(d::GeometricDuration, k::Int) = k >= 1 ? d.p * (1 - d.p)^(k-1) : 0.0
-Distributions.ccdf(d::GeometricDuration, k::Int) = k >= 0 ? (1 - d.p)^k : 1.0
-Distributions.quantile(d::GeometricDuration, p::Real) = ceil(Int, log(1-p) / log(1-d.p))
+
+# P(X > k) = P(Y + 1 > k) = P(Y > k-1) = P(Y ≥ k) = (1-p)^k
+Distributions.ccdf(d::GeometricDuration, k::Int) = k >= 1 ? (1 - d.p)^k : 1.0
+
+# FIXED: Quantile function
+function Distributions.quantile(d::GeometricDuration, p_val::Real)
+    return ceil(Int, log(1 - p_val) / log(1 - d.p)) + 1
+end
 
 Distributions.mean(d::GeometricDuration) = 1 / d.p
 Distributions.var(d::GeometricDuration) = (1 - d.p) / d.p^2
@@ -48,7 +51,6 @@ end
 function StatsAPI.fit!(d::GeometricDuration{T}, durations::AbstractVector{Int}, weights::AbstractVector) where T
     weighted_mean = sum(durations .* weights) / sum(weights)
     new_p = 1 / weighted_mean
-    # Modify in place to match package patterns
     d.p = clamp(new_p, 1e-10, 1.0)
     return nothing
 end
@@ -81,12 +83,13 @@ function Distributions.pdf(d::PoissonDuration, k::Int)
     return k >= 1 ? pdf(Poisson(d.λ), k-1) : 0.0
 end
 
+# P(X > k) = P(Y + 1 > k) = P(Y > k-1) = P(Y ≥ k) = ccdf(Poisson(λ), k-1)
 function Distributions.ccdf(d::PoissonDuration, k::Int)
-    return k >= 0 ? ccdf(Poisson(d.λ), k) : 1.0
+    return k >= 1 ? ccdf(Poisson(d.λ), k-1) : 1.0
 end
 
-function Distributions.quantile(d::PoissonDuration, p::Real)
-    return quantile(Poisson(d.λ), p) + 1
+function Distributions.quantile(d::PoissonDuration, p_val::Real)
+    return quantile(Poisson(d.λ), p_val) + 1
 end
 
 Distributions.mean(d::PoissonDuration) = d.λ + 1
@@ -137,8 +140,9 @@ function Distributions.pdf(d::NegBinomialDuration, k::Int)
     return k >= 1 ? pdf(NegativeBinomial(d.r, d.p), k-1) : 0.0
 end
 
+# P(X > k) = P(Y + 1 > k) = P(Y > k-1) = P(Y ≥ k) = ccdf(NegativeBinomial(r, p), k-1)
 function Distributions.ccdf(d::NegBinomialDuration, k::Int)
-    return k >= 0 ? ccdf(NegativeBinomial(d.r, d.p), k) : 1.0
+    return k >= 1 ? ccdf(NegativeBinomial(d.r, d.p), k-1) : 1.0
 end
 
 function Distributions.quantile(d::NegBinomialDuration, p_quantile::Real)

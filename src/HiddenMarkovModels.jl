@@ -18,6 +18,7 @@ using Distributions
 using DocStringExtensions
 using FillArrays: Fill
 using LinearAlgebra: Transpose, axpy!, dot, ldiv!, lmul!, mul!, parent
+using LogExpFunctions: logsumexp
 using Random: Random, AbstractRNG, default_rng
 using SparseArrays: AbstractSparseArray, SparseMatrixCSC, nonzeros, nnz, nzrange, rowvals
 using StatsAPI: StatsAPI, fit, fit!
