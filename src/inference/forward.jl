@@ -171,7 +171,7 @@ Storage for HSMM forward algorithm results.
 
 $(TYPEDFIELDS)
 """
-struct HSMMForwardStorage{R}
+struct HSMMForwardStorage{R<:Real}
     "forward probabilities α[i,d,t] = P(X[t]=i, D[t]=d | Y[1:t])"
     α::Array{R,3}  # states × max_duration × time
     "one loglikelihood per observation sequence"
@@ -193,7 +193,7 @@ Storage for HSMM forward-backward algorithm results.
 
 $(TYPEDFIELDS) 
 """
-struct HSMMForwardBackwardStorage{R,M<:AbstractMatrix{R}}
+struct HSMMForwardBackwardStorage{R<:Real,M<:AbstractMatrix{R}}
     "posterior state marginals γ[i,t] = P(X[t]=i | Y[1:T])"
     γ::Matrix{R}
     "posterior duration marginals δ[i,d,t] = P(X[t]=i, D[t]=d | Y[1:T])"
@@ -237,23 +237,23 @@ function initialize_hsmm_forward(
     B = Matrix{R}(undef, N, T)
     c = Vector{R}(undef, T)
     
-    return HSMMForwardStorage(α, logL, B, c, max_duration)
+    return HSMMForwardStorage{R}(α, logL, B, c, max_duration)
 end
 
 function _forward!(
-    storage::HSMMForwardOrHSMMForwardBackwardStorage,
+    storage::HSMMForwardOrHSMMForwardBackwardStorage{R},
     hsmm::AbstractHSMM,
     obs_seq::AbstractVector,
     control_seq::AbstractVector,
     seq_ends::AbstractVectorOrNTuple{Int},
     k::Integer;
     error_if_not_finite::Bool = true,
-)
+) where {R}
     (; α, B, c, logL, max_duration) = storage
     t1, t2 = seq_limits(seq_ends, k)
     N = length(hsmm)
     
-    logL[k] = zero(eltype(logL))
+    logL[k] = zero(R)
     
     for t in t1:t2
         # Compute observation likelihoods in log space for stability
@@ -262,7 +262,9 @@ function _forward!(
         
         # Convert to probabilities with max normalization
         logmax = maximum(Bₜ)
-        Bₜ .= exp.(Bₜ .- logmax)
+        @simd for i in 1:N
+            Bₜ[i] = exp(Bₜ[i] - logmax)
+        end
         
         if t == t1
             # === INITIALIZATION ===
@@ -270,18 +272,17 @@ function _forward!(
             for i in 1:N
                 α[i, 1, t] = init[i] * Bₜ[i]
                 # Initialize all other durations to zero
-                for d in 2:max_duration
-                    α[i, d, t] = zero(eltype(α))
+                @simd for d in 2:max_duration
+                    α[i, d, t] = zero(R)
                 end
             end
         else
             # === FORWARD RECURSION ===
             αₜ = view(α, :, :, t)
             αₜ₋₁ = view(α, :, :, t-1)
-            fill!(αₜ, zero(eltype(α)))
+            fill!(αₜ, zero(R))
             
             # Get model parameters for this time step
-            # Note: control at time t-1 affects transition from t-1 to t
             trans = transition_matrix(hsmm, control_seq[t-1]) 
             durations = duration_distributions(hsmm, control_seq[t])
             
@@ -289,27 +290,23 @@ function _forward!(
                 for d in 1:max_duration
                     
                     # === CASE 1: CONTINUE IN SAME STATE ===
-                    # We were in state i with duration d-1 at time t-1
-                    # and we continue to stay in state i
                     if d > 1
                         # Probability of continuing: P(Duration ≥ d | Duration ≥ d-1)
                         ccdf_d_minus_1 = ccdf(durations[i], d-1)
                         ccdf_d = ccdf(durations[i], d)
                         
-                        if ccdf_d_minus_1 > 0
+                        if ccdf_d_minus_1 > zero(R)
                             continue_prob = ccdf_d / ccdf_d_minus_1
                             α[i, d, t] += αₜ₋₁[i, d-1] * continue_prob
                         end
                     end
                     
                     # === CASE 2: ENTER FROM ANOTHER STATE ===
-                    # We transition into state i from some other state j
-                    # This can only happen with duration d = 1 (just entered)
                     if d == 1
                         for j in 1:N
                             if i != j  # No self-transitions in HSMM
                                 # Sum over all durations that could end at time t-1
-                                enter_contribution = zero(eltype(α))
+                                enter_contribution = zero(R)
                                 for d_prev in 1:max_duration
                                     # Probability that state j ends after exactly d_prev steps
                                     end_prob = pdf(durations[j], d_prev)
@@ -329,14 +326,24 @@ function _forward!(
         end
         
         # === NORMALIZATION ===
-        total_prob = sum(α[:, :, t])
-        if total_prob > 0
+        total_prob = zero(R)
+        @simd for i in 1:N
+            @simd for d in 1:max_duration
+                total_prob += α[i, d, t]
+            end
+        end
+        
+        if total_prob > zero(R)
             c[t] = inv(total_prob)
-            α[:, :, t] .*= c[t]
+            @simd for i in 1:N
+                @simd for d in 1:max_duration
+                    α[i, d, t] *= c[t]
+                end
+            end
             logL[k] += -log(c[t]) + logmax  # Add back the log normalization
         else
             # Handle degenerate case
-            c[t] = one(eltype(c))
+            c[t] = one(R)
             logL[k] += -Inf
         end
     end
@@ -383,7 +390,7 @@ function forward(
     seq_ends::AbstractVectorOrNTuple{Int}=(length(obs_seq),),
     max_duration::Int=50,
     error_if_not_finite::Bool=true,
-)
+)::Tuple{Array{eltype(hsmm, obs_seq[1], control_seq[1]),3}, Vector{eltype(hsmm, obs_seq[1], control_seq[1])}}
     storage = initialize_hsmm_forward(hsmm, obs_seq, control_seq; seq_ends, max_duration)
     forward!(storage, hsmm, obs_seq, control_seq; seq_ends, error_if_not_finite)
     return storage.α, storage.logL

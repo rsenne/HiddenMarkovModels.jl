@@ -101,8 +101,13 @@ function StatsAPI.fit!(
     # === UPDATE OBSERVATION DISTRIBUTIONS ===
     for i in 1:length(hsmm)
         # Collect weights for state i (sum over all durations)
-        weights = vec(sum(γ[i:i, :], dims=1))  # Sum over durations
-        fit_in_sequence!(hsmm.dists, i, obs_seq, weights)
+        weights = vec(sum(γ[i:i, :], dims=1))  # Sum over durations, but γ is already summed
+        weights = γ[i, :]  # γ[i,t] is already the marginal for state i at time t
+        
+        # Ensure weights are properly typed
+        weights_typed = Vector{Float64}(weights)
+        
+        fit_in_sequence!(hsmm.dists, i, obs_seq, weights_typed)
     end
     
     # === UPDATE DURATION DISTRIBUTIONS ===

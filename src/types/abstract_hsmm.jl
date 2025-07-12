@@ -42,6 +42,14 @@ function duration_distributions end
 # Fallbacks for no control
 duration_distributions(hsmm::AbstractHSMM, ::Nothing) = duration_distributions(hsmm)
 
+function Base.eltype(hsmm::AbstractHSMM, obs, control)
+    init_type = eltype(initialization(hsmm))
+    trans_type = eltype(transition_matrix(hsmm, control))
+    dist = obs_distributions(hsmm, control)[1]
+    logdensity_type = typeof(logdensityof(dist, obs))
+    return promote_type(init_type, trans_type, logdensity_type)
+end
+
 ## HSMM-specific sampling (override the AbstractHMM version)
 
 """
