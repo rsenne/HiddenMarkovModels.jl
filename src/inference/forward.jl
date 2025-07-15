@@ -353,6 +353,7 @@ function dur_survival_potentials(hsmm, t::Int, max_duration::Int, T::Int)
     return aDsl
 end
 
+# Simple fix: Just add normalization to the existing algorithm
 function _forward!(
     storage::HSMMForwardOrHSMMForwardBackwardStorage{R},
     hsmm::AbstractHSMM,
@@ -373,10 +374,10 @@ function _forward!(
         obs_logdensities!(view(storage.B, :, t), hsmm, obs_seq[t], control_seq[t]; error_if_not_finite=false)
     end
     
-    # Initialize alphastarl[1] = log(π₀)
+    # Initialize alphastarl[i, t1] = log(π₀[i])
     loginit = log_initialization(hsmm)
     for i in 1:N
-        storage.alphastarl[t1, i] = loginit[i]
+        storage.alphastarl[i, t1] = loginit[i]
     end
     
     storage.logL[k] = zero(R)
@@ -385,81 +386,87 @@ function _forward!(
     for t in t1:(t2-1)
         t_rel = t - t1 + 1
         
-        # Compute alphal[t] using reverse potentials
+        # Compute alphal[i, t] using reverse potentials
         cB = reverse_cumulative_obs_potentials(storage, hsmm, obs_seq, control_seq, t_rel, max_duration)
         rdp = reverse_dur_potentials(hsmm, t_rel, max_duration)
         
-        # alphal[t] = logsumexp over durations
+        # alphal[i, t] = logsumexp over durations
+        log_alphal_unnorm = fill(-Inf, N)
         for i in 1:N
             logsum_terms = R[]
             
             for τ in 1:min(size(cB, 1), size(rdp, 1), t_rel)
                 start_time = t - τ + 1
                 if start_time >= t1
-                    alphastarl_val = storage.alphastarl[start_time, i]
+                    alphastarl_val = storage.alphastarl[i, start_time]
                     term = alphastarl_val + cB[τ, i] + rdp[τ, i]
                     push!(logsum_terms, term)
                 end
             end
             
             if !isempty(logsum_terms)
-                storage.alphal[t, i] = logsumexp(logsum_terms)
-            else
-                storage.alphal[t, i] = -Inf
+                log_alphal_unnorm[i] = logsumexp(logsum_terms)
             end
         end
         
-        # Compute alphastarl[t+1] from alphal[t] and transitions
+        # NORMALIZE: Convert to probabilities, normalize, convert back to log
+        log_normalizer = logsumexp(log_alphal_unnorm)
+        storage.logL[k] += log_normalizer  # Accumulate log-likelihood
+        
+        for i in 1:N
+            storage.alphal[i, t] = log_alphal_unnorm[i] - log_normalizer
+        end
+        
+        # Compute alphastarl[j, t+1] from normalized alphal[i, t] and transitions
         logtrans = log_transition_matrix(hsmm, control_seq[t+1])
         
         for j in 1:N
             logsum_terms = R[]
             for i in 1:N
-                alphal_val = storage.alphal[t, i]
+                alphal_val = storage.alphal[i, t]  # Now normalized 
                 term = alphal_val + logtrans[i, j]
                 push!(logsum_terms, term)
             end
             
             if !isempty(logsum_terms)
-                storage.alphastarl[t+1, j] = logsumexp(logsum_terms)
+                storage.alphastarl[j, t+1] = logsumexp(logsum_terms)
             else
-                storage.alphastarl[t+1, j] = -Inf
+                storage.alphastarl[j, t+1] = -Inf
             end
         end
     end
     
-    # Final alphal[T]
+    # Final alphal[i, T] - also normalize this
     t = t2
     t_rel = T
     cB = reverse_cumulative_obs_potentials(storage, hsmm, obs_seq, control_seq, t_rel, max_duration)
     rdp = reverse_dur_potentials(hsmm, t_rel, max_duration)
     
+    log_alphal_unnorm = fill(-Inf, N)
     for i in 1:N
         logsum_terms = R[]
         
         for τ in 1:min(size(cB, 1), size(rdp, 1), t_rel)
             start_time = t - τ + 1
             if start_time >= t1
-                alphastarl_val = storage.alphastarl[start_time, i]
+                alphastarl_val = storage.alphastarl[i, start_time]
                 term = alphastarl_val + cB[τ, i] + rdp[τ, i]
                 push!(logsum_terms, term)
             end
         end
         
         if !isempty(logsum_terms)
-            storage.alphal[t, i] = logsumexp(logsum_terms)
-        else
-            storage.alphal[t, i] = -Inf
+            log_alphal_unnorm[i] = logsumexp(logsum_terms)
         end
     end
     
-    # Compute normalizer
-    logsum_terms = R[]
-    for i in 1:N
-        push!(logsum_terms, storage.alphal[t2, i])
-    end
+    # NORMALIZE final step too
+    log_normalizer = logsumexp(log_alphal_unnorm)
+    storage.logL[k] += log_normalizer  # Accumulate final log-likelihood
     
-    storage.logL[k] = logsumexp(logsum_terms)
+    for i in 1:N
+        storage.alphal[i, t] = log_alphal_unnorm[i] - log_normalizer
+    end
     
     error_if_not_finite && @argcheck isfinite(storage.logL[k])
     return nothing

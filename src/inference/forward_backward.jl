@@ -184,7 +184,7 @@ function _forward_backward!(
     # Backward pass using PyHSMM logic
     # Initialize betal[i, T] = 0
     for i in 1:N
-        storage.betal[i, t2] = zero(R)
+        storage.betal[i, t2] = zero(R) 
     end
     
     for t in t2:-1:t1
@@ -201,7 +201,7 @@ function _forward_backward!(
             for τ in 1:min(size(cB, 1), size(dp, 1))
                 future_time = t + τ - 1
                 if future_time <= t2
-                    betal_val = storage.betal[i, future_time]
+                    betal_val = storage.betal[i, future_time]  
                     term = betal_val + cB[τ, i] + dp[τ, i]
                     push!(logsum_terms, term)
                 end
@@ -219,9 +219,9 @@ function _forward_backward!(
                     end
                 end
                 
-                storage.betastarl[i, t] = betastarl_val
+                storage.betastarl[i, t] = betastarl_val  
             else
-                storage.betastarl[i, t] = -Inf
+                storage.betastarl[i, t] = -Inf  
             end
         end
         
@@ -232,15 +232,15 @@ function _forward_backward!(
             for i in 1:N
                 logsum_terms = R[]
                 for j in 1:N
-                    betastarl_val = storage.betastarl[j, t]
+                    betastarl_val = storage.betastarl[j, t]  
                     term = betastarl_val + logtrans[i, j]
                     push!(logsum_terms, term)
                 end
                 
                 if !isempty(logsum_terms)
-                    storage.betal[i, t-1] = logsumexp(logsum_terms)
+                    storage.betal[i, t-1] = logsumexp(logsum_terms)  
                 else
-                    storage.betal[i, t-1] = -Inf
+                    storage.betal[i, t-1] = -Inf  
                 end
             end
         end
@@ -251,8 +251,8 @@ function _forward_backward!(
         logsum_terms = R[]
         
         for i in 1:N
-            alphal_val = storage.alphal[i, t]
-            betal_val = storage.betal[i, t]
+            alphal_val = storage.alphal[i, t] 
+            betal_val = storage.betal[i, t]  
             term = alphal_val + betal_val
             push!(logsum_terms, term)
         end
@@ -260,9 +260,9 @@ function _forward_backward!(
         normalizer = logsumexp(logsum_terms)
         
         for i in 1:N
-            alphal_val = storage.alphal[i, t]
-            betal_val = storage.betal[i, t]
-            storage.γ[i, t] = exp(alphal_val + betal_val - normalizer)
+            alphal_val = storage.alphal[i, t]  
+            betal_val = storage.betal[i, t]  
+            storage.γ[i, t] = exp(alphal_val + betal_val - normalizer)  
         end
     end
     
@@ -275,8 +275,8 @@ function _forward_backward!(
             for i in 1:N
                 for j in 1:N
                     # ξ[t][i,j] = exp(alphal[i,t] + logtrans[i,j] + betastarl[j,t+1] - normalizer)
-                    alphal_val = storage.alphal[i, t]
-                    betastarl_val = storage.betastarl[j, t+1]
+                    alphal_val = storage.alphal[i, t]  
+                    betastarl_val = storage.betastarl[j, t+1]  
                     normalizer = storage.logL[k]  # Use sequence log-likelihood as normalizer
                     
                     storage.ξ[t][i, j] = exp(alphal_val + logtrans[i, j] + betastarl_val - normalizer)
@@ -288,7 +288,6 @@ function _forward_backward!(
     
     return nothing
 end
-
 
 """
 $(SIGNATURES)
