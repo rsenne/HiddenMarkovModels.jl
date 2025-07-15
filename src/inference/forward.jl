@@ -172,8 +172,10 @@ Storage for HSMM forward algorithm results.
 $(TYPEDFIELDS)
 """
 struct HSMMForwardStorage{R<:Real}
-    "forward probabilities α[i,d,t] = P(X[t]=i, D[t]=d | Y[1:t])"
-    α::Array{R,3}  # states × max_duration × time
+    "forward probabilities alphastarl[t,i] = P(state=i, duration starts | Y[1:t])"
+    alphastarl::Matrix{R}
+    "forward probabilities alphal[t,i] = P(state=i | Y[1:t])"  
+    alphal::Matrix{R}
     "one loglikelihood per observation sequence"
     logL::Vector{R}
     "observation likelihoods B[i,t] = P(Y[t] | X[t]=i)"
@@ -196,18 +198,28 @@ $(TYPEDFIELDS)
 struct HSMMForwardBackwardStorage{R<:Real,M<:AbstractMatrix{R}}
     "posterior state marginals γ[i,t] = P(X[t]=i | Y[1:T])"
     γ::Matrix{R}
-    "posterior duration marginals δ[i,d,t] = P(X[t]=i, D[t]=d | Y[1:T])"
-    δ::Array{R,3}  # states × max_duration × time
     "posterior transition marginals ξ[t][i,j] = P(transition from i to j at time t | Y[1:T])"
-    ξ::Vector{M}  # Essential for parameter learning
+    ξ::Vector{M}
     "one loglikelihood per observation sequence"
     logL::Vector{R}
+    
     # Forward quantities
-    α::Array{R,3}
+    "forward probabilities alphastarl[t,i]"
+    alphastarl::Matrix{R}
+    "forward probabilities alphal[t,i]"
+    alphal::Matrix{R}
+    "observation likelihoods B[i,t]" 
     B::Matrix{R}
+    "normalization constants"
     c::Vector{R}
-    # Backward quantities  
-    β::Array{R,3}
+    
+    # Backward quantities
+    "backward probabilities betal[t,i]"
+    betal::Matrix{R}
+    "backward probabilities betastarl[t,i]"
+    betastarl::Matrix{R}
+    
+    "maximum duration considered"
     max_duration::Int
 end
 
@@ -232,12 +244,113 @@ function initialize_hsmm_forward(
     N, T, K = length(hsmm), length(obs_seq), length(seq_ends)
     R = eltype(hsmm, obs_seq[1], control_seq[1])
     
-    α = Array{R,3}(undef, N, max_duration, T)
+    alphastarl = Matrix{R}(undef, N, T)
+    alphal = Matrix{R}(undef, N, T) 
     logL = Vector{R}(undef, K)
     B = Matrix{R}(undef, N, T)
     c = Vector{R}(undef, T)
     
-    return HSMMForwardStorage{R}(α, logL, B, c, max_duration)
+    return HSMMForwardStorage{R}(alphastarl, alphal, logL, B, c, max_duration)
+end
+
+# Helper functions for HSMMs
+
+function cumulative_obs_potentials(storage, hsmm, obs_seq, control, t::Int, max_duration::Int)
+    N, T = size(storage.B)  
+    stop = min(T, t + max_duration - 1)
+    
+    # Return cumulative sum from t onwards
+    cB = zeros(eltype(storage.B), stop - t + 1, N)
+    
+    for τ in 1:(stop - t + 1)
+        time_idx = t + τ - 1
+        for i in 1:N
+            if τ == 1
+                cB[τ, i] = storage.B[i, time_idx]
+            else
+                cB[τ, i] = cB[τ-1, i] + storage.B[i, time_idx]
+            end
+        end
+    end
+    
+    return cB, 0.0  # offset
+end
+
+function reverse_cumulative_obs_potentials(storage, hsmm, obs_seq, control, t::Int, max_duration::Int)
+    N, T = size(storage.B) 
+    start = max(1, t - max_duration + 1)
+    
+    # Return reverse cumulative sum up to t
+    length = t - start + 1
+    cB = zeros(eltype(storage.B), length, N)
+    
+    # Build cumulative from start to t
+    for τ in 1:length
+        time_idx = start + τ - 1
+        for i in 1:N
+            if τ == 1
+                cB[τ, i] = storage.B[i, time_idx]
+            else
+                cB[τ, i] = cB[τ-1, i] + storage.B[i, time_idx]
+            end
+        end
+    end
+    
+    # Convert to reverse cumulative (PyHSMM style)
+    total = cB[end, :]
+    for τ in 1:length
+        for i in 1:N
+            cB[τ, i] = total[i] - (τ > 1 ? cB[τ-1, i] : 0.0)
+        end
+    end
+    
+    return cB
+end
+
+function dur_potentials(hsmm, t::Int, max_duration::Int, T::Int)
+    durations = duration_distributions(hsmm)
+    N = length(durations)
+    stop = min(max_duration, T - t + 1)
+    
+    aDl = Matrix{Float64}(undef, stop, N)
+    for d in 1:stop
+        for i in 1:N
+            aDl[d, i] = logpdf(durations[i], d)
+        end
+    end
+    
+    return aDl
+end
+
+function reverse_dur_potentials(hsmm, t::Int, max_duration::Int)
+    durations = duration_distributions(hsmm)
+    N = length(durations)
+    stop = min(t, max_duration)
+    
+    aDl = Matrix{Float64}(undef, stop, N)
+    for d in 1:stop
+        for i in 1:N
+            # This should be reversed to match PyHSMM: aDl[:stop][::-1]
+            aDl[d, i] = logpdf(durations[i], stop - d + 1)
+        end
+    end
+    
+    return aDl
+end
+
+function dur_survival_potentials(hsmm, t::Int, max_duration::Int, T::Int)
+    durations = duration_distributions(hsmm)
+    N = length(durations)
+    remaining_time = T - t + 1
+    
+    aDsl = fill(-Inf, N)
+    if remaining_time <= max_duration
+        for i in 1:N
+            aDsl[i] = logccdf(durations[i], remaining_time)
+        end
+    end
+    
+    return aDsl
 end
 
 function _forward!(
@@ -249,106 +362,106 @@ function _forward!(
     k::Integer;
     error_if_not_finite::Bool = true,
 ) where {R}
-    (; α, B, c, logL, max_duration) = storage
+    
     t1, t2 = seq_limits(seq_ends, k)
+    T = t2 - t1 + 1
     N = length(hsmm)
+    max_duration = storage.max_duration
     
-    logL[k] = zero(R)
-    
+    # Pre-compute observation likelihoods
     for t in t1:t2
-        # Compute observation likelihoods in log space for stability
-        Bₜ = view(B, :, t)
-        obs_logdensities!(Bₜ, hsmm, obs_seq[t], control_seq[t]; error_if_not_finite)
+        obs_logdensities!(view(storage.B, :, t), hsmm, obs_seq[t], control_seq[t]; error_if_not_finite=false)
+    end
+    
+    # Initialize alphastarl[1] = log(π₀)
+    loginit = log_initialization(hsmm)
+    for i in 1:N
+        storage.alphastarl[t1, i] = loginit[i]
+    end
+    
+    storage.logL[k] = zero(R)
+    
+    # Forward messages (following PyHSMM logic)
+    for t in t1:(t2-1)
+        t_rel = t - t1 + 1
         
-        # Convert to probabilities with max normalization
-        logmax = maximum(Bₜ)
-        @simd for i in 1:N
-            Bₜ[i] = exp(Bₜ[i] - logmax)
-        end
+        # Compute alphal[t] using reverse potentials
+        cB = reverse_cumulative_obs_potentials(storage, hsmm, obs_seq, control_seq, t_rel, max_duration)
+        rdp = reverse_dur_potentials(hsmm, t_rel, max_duration)
         
-        if t == t1
-            # === INITIALIZATION ===
-            init = initialization(hsmm)
-            for i in 1:N
-                α[i, 1, t] = init[i] * Bₜ[i]
-                # Initialize all other durations to zero
-                @simd for d in 2:max_duration
-                    α[i, d, t] = zero(R)
-                end
-            end
-        else
-            # === FORWARD RECURSION ===
-            αₜ = view(α, :, :, t)
-            αₜ₋₁ = view(α, :, :, t-1)
-            fill!(αₜ, zero(R))
+        # alphal[t] = logsumexp over durations
+        for i in 1:N
+            logsum_terms = R[]
             
-            # Get model parameters for this time step
-            trans = transition_matrix(hsmm, control_seq[t-1]) 
-            durations = duration_distributions(hsmm, control_seq[t])
+            for τ in 1:min(size(cB, 1), size(rdp, 1), t_rel)
+                start_time = t - τ + 1
+                if start_time >= t1
+                    alphastarl_val = storage.alphastarl[start_time, i]
+                    term = alphastarl_val + cB[τ, i] + rdp[τ, i]
+                    push!(logsum_terms, term)
+                end
+            end
             
+            if !isempty(logsum_terms)
+                storage.alphal[t, i] = logsumexp(logsum_terms)
+            else
+                storage.alphal[t, i] = -Inf
+            end
+        end
+        
+        # Compute alphastarl[t+1] from alphal[t] and transitions
+        logtrans = log_transition_matrix(hsmm, control_seq[t+1])
+        
+        for j in 1:N
+            logsum_terms = R[]
             for i in 1:N
-                for d in 1:max_duration
-                    
-                    # === CASE 1: CONTINUE IN SAME STATE ===
-                    if d > 1
-                        # Probability of continuing: P(Duration ≥ d | Duration ≥ d-1)
-                        ccdf_d_minus_1 = ccdf(durations[i], d-1)
-                        ccdf_d = ccdf(durations[i], d)
-                        
-                        if ccdf_d_minus_1 > zero(R)
-                            continue_prob = ccdf_d / ccdf_d_minus_1
-                            α[i, d, t] += αₜ₋₁[i, d-1] * continue_prob
-                        end
-                    end
-                    
-                    # === CASE 2: ENTER FROM ANOTHER STATE ===
-                    if d == 1
-                        for j in 1:N
-                            if i != j  # No self-transitions in HSMM
-                                # Sum over all durations that could end at time t-1
-                                enter_contribution = zero(R)
-                                for d_prev in 1:max_duration
-                                    # Probability that state j ends after exactly d_prev steps
-                                    end_prob = pdf(durations[j], d_prev)
-                                    enter_contribution += αₜ₋₁[j, d_prev] * end_prob
-                                end
-                                
-                                # Apply transition probability
-                                α[i, d, t] += enter_contribution * trans[j, i]
-                            end
-                        end
-                    end
-                    
-                    # === APPLY OBSERVATION LIKELIHOOD ===
-                    α[i, d, t] *= Bₜ[i]
-                end
+                alphal_val = storage.alphal[t, i]
+                term = alphal_val + logtrans[i, j]
+                push!(logsum_terms, term)
             end
-        end
-        
-        # === NORMALIZATION ===
-        total_prob = zero(R)
-        @simd for i in 1:N
-            @simd for d in 1:max_duration
-                total_prob += α[i, d, t]
+            
+            if !isempty(logsum_terms)
+                storage.alphastarl[t+1, j] = logsumexp(logsum_terms)
+            else
+                storage.alphastarl[t+1, j] = -Inf
             end
-        end
-        
-        if total_prob > zero(R)
-            c[t] = inv(total_prob)
-            @simd for i in 1:N
-                @simd for d in 1:max_duration
-                    α[i, d, t] *= c[t]
-                end
-            end
-            logL[k] += -log(c[t]) + logmax  # Add back the log normalization
-        else
-            # Handle degenerate case
-            c[t] = one(R)
-            logL[k] += -Inf
         end
     end
     
-    error_if_not_finite && @argcheck isfinite(logL[k])
+    # Final alphal[T]
+    t = t2
+    t_rel = T
+    cB = reverse_cumulative_obs_potentials(storage, hsmm, obs_seq, control_seq, t_rel, max_duration)
+    rdp = reverse_dur_potentials(hsmm, t_rel, max_duration)
+    
+    for i in 1:N
+        logsum_terms = R[]
+        
+        for τ in 1:min(size(cB, 1), size(rdp, 1), t_rel)
+            start_time = t - τ + 1
+            if start_time >= t1
+                alphastarl_val = storage.alphastarl[start_time, i]
+                term = alphastarl_val + cB[τ, i] + rdp[τ, i]
+                push!(logsum_terms, term)
+            end
+        end
+        
+        if !isempty(logsum_terms)
+            storage.alphal[t, i] = logsumexp(logsum_terms)
+        else
+            storage.alphal[t, i] = -Inf
+        end
+    end
+    
+    # Compute normalizer
+    logsum_terms = R[]
+    for i in 1:N
+        push!(logsum_terms, storage.alphal[t2, i])
+    end
+    
+    storage.logL[k] = logsumexp(logsum_terms)
+    
+    error_if_not_finite && @argcheck isfinite(storage.logL[k])
     return nothing
 end
 
@@ -390,8 +503,8 @@ function forward(
     seq_ends::AbstractVectorOrNTuple{Int}=(length(obs_seq),),
     max_duration::Int=50,
     error_if_not_finite::Bool=true,
-)::Tuple{Array{eltype(hsmm, obs_seq[1], control_seq[1]),3}, Vector{eltype(hsmm, obs_seq[1], control_seq[1])}}
+)
     storage = initialize_hsmm_forward(hsmm, obs_seq, control_seq; seq_ends, max_duration)
     forward!(storage, hsmm, obs_seq, control_seq; seq_ends, error_if_not_finite)
-    return storage.α, storage.logL
+    return storage.alphal, storage.logL
 end

@@ -125,13 +125,13 @@ HSMM implementations
 """
 $(SIGNATURES)
 """
-function initialize_forward_backward(
+function initialize_hsmm_forward_backward(
     hsmm::AbstractHSMM,
     obs_seq::AbstractVector,
     control_seq::AbstractVector;
     seq_ends::AbstractVectorOrNTuple{Int},
-    max_duration::Int=50,
-    transition_marginals::Bool=true,
+    max_duration::Int = 50,
+    transition_marginals::Bool = true
 )
     N, T, K = length(hsmm), length(obs_seq), length(seq_ends)
     R = eltype(hsmm, obs_seq[1], control_seq[1])
@@ -139,21 +139,28 @@ function initialize_forward_backward(
     M = typeof(similar(trans, R))
 
     γ = Matrix{R}(undef, N, T)
-    δ = Array{R,3}(undef, N, max_duration, T)
     ξ = Vector{M}(undef, T)
     if transition_marginals
         for t in 1:(T - 1)
             ξ[t] = similar(transition_matrix(hsmm, control_seq[t + 1]), R)
         end
-        ξ[T] = zero(trans)  # not used
+        ξ[T] = zero(trans)
     end
     logL = Vector{R}(undef, K)
+    
+    # Forward quantities
+    alphastarl = Matrix{R}(undef, N, T)
+    alphal = Matrix{R}(undef, N, T)
     B = Matrix{R}(undef, N, T)
-    α = Array{R,3}(undef, N, max_duration, T)
     c = Vector{R}(undef, T)
-    β = Array{R,3}(undef, N, max_duration, T)
+    
+    # Backward quantities  
+    betal = Matrix{R}(undef, N, T)
+    betastarl = Matrix{R}(undef, N, T)
 
-    return HSMMForwardBackwardStorage{R,M}(γ, δ, ξ, logL, α, B, c, β, max_duration)
+    return HSMMForwardBackwardStorage{R,M}(
+        γ, ξ, logL, alphastarl, alphal, B, c, betal, betastarl, max_duration
+    )
 end
 
 function _forward_backward!(
@@ -163,107 +170,125 @@ function _forward_backward!(
     control_seq::AbstractVector,
     seq_ends::AbstractVectorOrNTuple{Int},
     k::Integer;
-    transition_marginals::Bool=true,
+    transition_marginals::Bool = true,
 ) where {R}
-    (; α, β, c, γ, δ, ξ, B, max_duration) = storage
+    
     t1, t2 = seq_limits(seq_ends, k)
-
-    # Forward (fill B, α, c and logL)
-    _forward!(storage, hsmm, obs_seq, control_seq, seq_ends, k; error_if_not_finite=true)
-
-    # Backward
-    # Initialize at final time
-    for i in 1:length(hsmm), d in 1:max_duration
-        β[i, d, t2] = c[t2]
+    T = t2 - t1 + 1
+    N = length(hsmm)
+    max_duration = storage.max_duration
+    
+    # Run forward pass first
+    _forward!(storage, hsmm, obs_seq, control_seq, seq_ends, k)
+    
+    # Backward pass using PyHSMM logic
+    # Initialize betal[i, T] = 0
+    for i in 1:N
+        storage.betal[i, t2] = zero(R)
     end
     
-    for t in (t2 - 1):-1:t1
-        # Clear current time step
-        β[:, :, t] .= zero(R)
+    for t in t2:-1:t1
+        t_rel = t - t1 + 1
         
-        # Get model parameters
-        trans = transition_matrix(hsmm, control_seq[t + 1])
-        durations = duration_distributions(hsmm, control_seq[t + 1])
+        # Compute betastarl[i, t] using cumulative potentials
+        cB, offset = cumulative_obs_potentials(storage, hsmm, obs_seq, control_seq, t_rel, max_duration)
+        dp = dur_potentials(hsmm, t_rel, max_duration, T)
         
-        for i in 1:length(hsmm)
-            for d in 1:max_duration
-                
-                # Case 1: Continue in same state (d -> d+1)
-                if d < max_duration
-                    ccdf_d = ccdf(durations[i], d)
-                    ccdf_d_plus_1 = ccdf(durations[i], d+1)
-                    
-                    if ccdf_d > 0
-                        continue_prob = ccdf_d_plus_1 / ccdf_d
-                        β[i, d, t] += continue_prob * B[i, t+1] * β[i, d+1, t+1]
-                    end
-                end
-                
-                # Case 2: Transition from this state to another state
-                if d > 0
-                    end_prob = pdf(durations[i], d)
-                    
-                    for j in 1:length(hsmm)
-                        if i != j  # No self-transitions in HSMM
-                            β[i, d, t] += end_prob * trans[i, j] * B[j, t+1] * β[j, 1, t+1]
-                        end
-                    end
-                end
-            end
-        end
-        
-        # Apply normalization
-        β[:, :, t] .*= c[t]
-    end
-
-    # State marginals: γ[i,t] = Σ_d α[i,d,t] * β[i,d,t] / c[t]
-    for t in t1:t2
-        for i in 1:length(hsmm)
-            γ[i, t] = zero(R)
-            for d in 1:max_duration
-                γ[i, t] += α[i, d, t] * β[i, d, t]
-            end
-            γ[i, t] /= c[t]
-        end
-    end
-
-    # State-duration marginals: δ[i,d,t] = α[i,d,t] * β[i,d,t] / c[t]
-    for t in t1:t2
-        for i in 1:length(hsmm)
-            for d in 1:max_duration
-                δ[i, d, t] = α[i, d, t] * β[i, d, t] / c[t]
-            end
-        end
-    end
-
-    # Transition marginals: ξ[t][i,j] = P(transition from i to j at time t | Y[1:T])
-    if transition_marginals
-        for t in t1:(t2 - 1)
-            fill!(ξ[t], zero(R))
-            trans = transition_matrix(hsmm, control_seq[t])
-            durations = duration_distributions(hsmm, control_seq[t])
+        for i in 1:N
+            logsum_terms = R[]
             
-            for i in 1:length(hsmm)
-                for j in 1:length(hsmm)
-                    if i != j  # No self-transitions in HSMM
-                        # Sum over all durations that could end at time t
-                        for d in 1:max_duration
-                            if α[i, d, t] > 0 && β[j, 1, t+1] > 0
-                                # Probability that duration d ends at time t
-                                end_prob = pdf(durations[i], d)
-                                # Complete transition probability
-                                ξ[t][i, j] += α[i, d, t] * end_prob * trans[i, j] * B[j, t+1] * β[j, 1, t+1] / c[t]
-                            end
-                        end
+            # Sum over possible durations
+            for τ in 1:min(size(cB, 1), size(dp, 1))
+                future_time = t + τ - 1
+                if future_time <= t2
+                    betal_val = storage.betal[i, future_time]
+                    term = betal_val + cB[τ, i] + dp[τ, i]
+                    push!(logsum_terms, term)
+                end
+            end
+            
+            if !isempty(logsum_terms)
+                betastarl_val = logsumexp(logsum_terms) - offset
+                
+                # Add right censoring if applicable
+                if t + size(cB, 1) - 1 >= t2
+                    survival_terms = dur_survival_potentials(hsmm, t_rel, max_duration, T)
+                    if isfinite(survival_terms[i])
+                        censoring_term = cB[end, i] - offset + survival_terms[i]
+                        betastarl_val = logaddexp(betastarl_val, censoring_term)
                     end
+                end
+                
+                storage.betastarl[i, t] = betastarl_val
+            else
+                storage.betastarl[i, t] = -Inf
+            end
+        end
+        
+        # Compute betal[i, t-1] from betastarl[j, t] 
+        if t > t1
+            logtrans = log_transition_matrix(hsmm, control_seq[t])
+            
+            for i in 1:N
+                logsum_terms = R[]
+                for j in 1:N
+                    betastarl_val = storage.betastarl[j, t]
+                    term = betastarl_val + logtrans[i, j]
+                    push!(logsum_terms, term)
+                end
+                
+                if !isempty(logsum_terms)
+                    storage.betal[i, t-1] = logsumexp(logsum_terms)
+                else
+                    storage.betal[i, t-1] = -Inf
                 end
             end
         end
-        ξ[t2] .= zero(R)
     end
-
+    
+    # Compute state marginals γ[i,t] = exp(alphal[i,t] + betal[i,t] - normalizer)
+    for t in t1:t2
+        logsum_terms = R[]
+        
+        for i in 1:N
+            alphal_val = storage.alphal[i, t]
+            betal_val = storage.betal[i, t]
+            term = alphal_val + betal_val
+            push!(logsum_terms, term)
+        end
+        
+        normalizer = logsumexp(logsum_terms)
+        
+        for i in 1:N
+            alphal_val = storage.alphal[i, t]
+            betal_val = storage.betal[i, t]
+            storage.γ[i, t] = exp(alphal_val + betal_val - normalizer)
+        end
+    end
+    
+    # Compute transition marginals if requested
+    if transition_marginals
+        for t in t1:(t2-1)
+            fill!(storage.ξ[t], zero(R))
+            logtrans = log_transition_matrix(hsmm, control_seq[t+1])
+            
+            for i in 1:N
+                for j in 1:N
+                    # ξ[t][i,j] = exp(alphal[i,t] + logtrans[i,j] + betastarl[j,t+1] - normalizer)
+                    alphal_val = storage.alphal[i, t]
+                    betastarl_val = storage.betastarl[j, t+1]
+                    normalizer = storage.logL[k]  # Use sequence log-likelihood as normalizer
+                    
+                    storage.ξ[t][i, j] = exp(alphal_val + logtrans[i, j] + betastarl_val - normalizer)
+                end
+            end
+        end
+        storage.ξ[t2] .= zero(R)
+    end
+    
     return nothing
 end
+
 
 """
 $(SIGNATURES)
@@ -307,7 +332,7 @@ function forward_backward(
     max_duration::Int=50,
 )
     transition_marginals = false
-    storage = initialize_forward_backward(
+    storage = initialize_hsmm_forward_backward(
         hsmm, obs_seq, control_seq; seq_ends, max_duration, transition_marginals
     )
     forward_backward!(storage, hsmm, obs_seq, control_seq; seq_ends, transition_marginals)

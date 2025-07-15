@@ -1,14 +1,4 @@
 """
-Duration distributions for HSMMs with support on {1,2,3,...}.
-
-"""
-
-using Distributions
-using StatsAPI: fit!
-
-## GeometricDuration - equivalent to HMM self-transitions
-
-"""
     GeometricDuration{T} <: DiscreteUnivariateDistribution
 
 Geometric duration distribution with support {1,2,3,...}.
@@ -32,8 +22,26 @@ Base.show(io::IO, d::GeometricDuration) = print(io, "GeometricDuration(p=$(d.p))
 
 Distributions.pdf(d::GeometricDuration, k::Int) = k >= 1 ? d.p * (1 - d.p)^(k-1) : 0.0
 
+# Log version - more numerically stable
+function Distributions.logpdf(d::GeometricDuration, k::Int)
+    if k >= 1
+        return log(d.p) + (k-1) * log(1 - d.p)
+    else
+        return -Inf
+    end
+end
+
 # P(X > k) = P(Y + 1 > k) = P(Y > k-1) = P(Y ≥ k) = (1-p)^k
 Distributions.ccdf(d::GeometricDuration, k::Int) = k >= 1 ? (1 - d.p)^k : 1.0
+
+# Log version
+function Distributions.logccdf(d::GeometricDuration, k::Int)
+    if k >= 1
+        return k * log(1 - d.p)
+    else
+        return 0.0  # log(1.0)
+    end
+end
 
 # FIXED: Quantile function
 function Distributions.quantile(d::GeometricDuration, p_val::Real)
@@ -83,9 +91,27 @@ function Distributions.pdf(d::PoissonDuration, k::Int)
     return k >= 1 ? pdf(Poisson(d.λ), k-1) : 0.0
 end
 
+# Log version - delegate to Poisson logpdf
+function Distributions.logpdf(d::PoissonDuration, k::Int)
+    if k >= 1
+        return logpdf(Poisson(d.λ), k-1)
+    else
+        return -Inf
+    end
+end
+
 # P(X > k) = P(Y + 1 > k) = P(Y > k-1) = P(Y ≥ k) = ccdf(Poisson(λ), k-1)
 function Distributions.ccdf(d::PoissonDuration, k::Int)
     return k >= 1 ? ccdf(Poisson(d.λ), k-1) : 1.0
+end
+
+# Log version - delegate to Poisson logccdf
+function Distributions.logccdf(d::PoissonDuration, k::Int)
+    if k >= 1
+        return logccdf(Poisson(d.λ), k-1)
+    else
+        return 0.0  # log(1.0)
+    end
 end
 
 function Distributions.quantile(d::PoissonDuration, p_val::Real)
@@ -140,9 +166,27 @@ function Distributions.pdf(d::NegBinomialDuration, k::Int)
     return k >= 1 ? pdf(NegativeBinomial(d.r, d.p), k-1) : 0.0
 end
 
+# Log version - delegate to NegativeBinomial logpdf
+function Distributions.logpdf(d::NegBinomialDuration, k::Int)
+    if k >= 1
+        return logpdf(NegativeBinomial(d.r, d.p), k-1)
+    else
+        return -Inf
+    end
+end
+
 # P(X > k) = P(Y + 1 > k) = P(Y > k-1) = P(Y ≥ k) = ccdf(NegativeBinomial(r, p), k-1)
 function Distributions.ccdf(d::NegBinomialDuration, k::Int)
     return k >= 1 ? ccdf(NegativeBinomial(d.r, d.p), k-1) : 1.0
+end
+
+# Log version - delegate to NegativeBinomial logccdf
+function Distributions.logccdf(d::NegBinomialDuration, k::Int)
+    if k >= 1
+        return logccdf(NegativeBinomial(d.r, d.p), k-1)
+    else
+        return 0.0  # log(1.0)
+    end
 end
 
 function Distributions.quantile(d::NegBinomialDuration, p_quantile::Real)
