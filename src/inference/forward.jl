@@ -219,6 +219,9 @@ struct HSMMForwardBackwardStorage{R<:Real,M<:AbstractMatrix{R}}
     "backward probabilities betastarl[t,i]"
     betastarl::Matrix{R}
     
+    "expected durations: expected_durations[i,d] = expected count of duration d for state i"
+    expected_durations::Matrix{R}
+    
     "maximum duration considered"
     max_duration::Int
 end

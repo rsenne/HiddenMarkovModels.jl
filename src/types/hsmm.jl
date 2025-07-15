@@ -73,20 +73,20 @@ function StatsAPI.fit!(
     obs_seq::AbstractVector;
     seq_ends::AbstractVectorOrNTuple{Int},
 )
-    (; γ, δ, ξ) = fb_storage
-    
-    # === UPDATE INITIAL STATE PROBABILITIES ===
+    (; γ, ξ, expected_durations) = fb_storage  
+
+    # UPDATE INITIAL STATE PROBABILITIES
     fill!(hsmm.init, zero(eltype(hsmm.init)))
     for k in eachindex(seq_ends)
         t1, t2 = seq_limits(seq_ends, k)
-        # Sum over all durations at initial time
+        # Sum initial state probabilities
         for i in 1:length(hsmm)
-            hsmm.init[i] += sum(δ[i, :, t1])
+            hsmm.init[i] += γ[i, t1]
         end
     end
     sum_to_one!(hsmm.init)
     
-    # === UPDATE TRANSITION PROBABILITIES ===
+    # UPDATE TRANSITION PROBABILITIES
     fill!(hsmm.trans, zero(eltype(hsmm.trans)))
     for k in eachindex(seq_ends)
         t1, t2 = seq_limits(seq_ends, k)
@@ -98,33 +98,27 @@ function StatsAPI.fit!(
     # Normalize rows (no self-transitions, so diagonal should remain 0)
     foreach(sum_to_one!, eachrow(hsmm.trans))
     
-    # === UPDATE OBSERVATION DISTRIBUTIONS ===
+    # UPDATE OBSERVATION DISTRIBUTIONS
     for i in 1:length(hsmm)
-        # Collect weights for state i (sum over all durations)
-        weights = vec(sum(γ[i:i, :], dims=1))  # Sum over durations, but γ is already summed
-        weights = γ[i, :]  # γ[i,t] is already the marginal for state i at time t
-        
-        # Ensure weights are properly typed
+        weights = γ[i, :]  # State marginals
         weights_typed = Vector{Float64}(weights)
-        
         fit_in_sequence!(hsmm.dists, i, obs_seq, weights_typed)
     end
     
-    # === UPDATE DURATION DISTRIBUTIONS ===
+    # UPDATE DURATION DISTRIBUTIONS
     for i in 1:length(hsmm)
-        durations = Int[]
-        weights = Float64[]
+        # PyHSMM approach: durations = np.arange(1, max_duration+1), weights = expected_durations[state]
+        max_duration = size(expected_durations, 2)
+        durations = collect(1:max_duration)  # [1, 2, 3, ..., max_duration]
+        weights = expected_durations[i, :]   # Expected counts for each duration
         
-        for d in axes(δ, 2), t in axes(δ, 3)
-            w = δ[i, d, t]
-            if w > 0
-                push!(durations, d)
-                push!(weights, w)
-            end
-        end
-
-        if !isempty(durations)
-            fit!(hsmm.durations[i], durations, weights)
+        # Only fit if we have some positive weights
+        if sum(weights) > 1e-10
+            # Convert to Float64 to ensure type stability
+            durations_typed = Vector{Int}(durations)
+            weights_typed = Vector{Float64}(weights)
+            
+            fit!(hsmm.durations[i], durations_typed, weights_typed)
         end
     end
     

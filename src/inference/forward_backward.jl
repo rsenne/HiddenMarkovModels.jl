@@ -157,10 +157,79 @@ function initialize_hsmm_forward_backward(
     # Backward quantities  
     betal = Matrix{R}(undef, N, T)
     betastarl = Matrix{R}(undef, N, T)
+    
+    expected_durations = Matrix{R}(undef, N, max_duration)
 
     return HSMMForwardBackwardStorage{R,M}(
-        γ, ξ, logL, alphastarl, alphal, B, c, betal, betastarl, max_duration
+        γ, ξ, logL, alphastarl, alphal, B, c, betal, betastarl, 
+        expected_durations, max_duration
     )
+end
+
+function _compute_expected_durations!(
+    storage::HSMMForwardBackwardStorage{R},
+    hsmm::AbstractHSMM,
+    obs_seq::AbstractVector,
+    control_seq::AbstractVector,
+    seq_ends::AbstractVectorOrNTuple{Int},
+    k::Integer
+) where {R}
+    
+    t1, t2 = seq_limits(seq_ends, k)
+    T = t2 - t1 + 1
+    N = length(hsmm)
+    max_duration = storage.max_duration
+    normalizer = storage.logL[k]
+    
+    # Initialize expected_durations
+    logpmfs = fill(-Inf, N, T)
+    
+    # for each time t, accumulate duration probabilities
+    for t_rel in 1:T
+        t_abs = t1 + t_rel - 1
+        
+        # Get potentials for this time step
+        cB, offset = cumulative_obs_potentials(storage, hsmm, obs_seq, control_seq, t_rel, max_duration)
+        dp = dur_potentials(hsmm, t_rel, max_duration, T)
+        
+        # For each state and possible duration starting at t
+        for i in 1:N
+            max_dur = min(max_duration, size(cB, 1), size(dp, 1), T - t_rel + 1)
+            
+            for d in 1:max_dur
+                future_time_rel = t_rel + d - 1
+                future_time_abs = t_abs + d - 1
+                
+                if future_time_abs <= t2
+                    # dur_potentials(t) + alphastarl[t] + betal[t:] + cB - (normalizer + offset)
+                    alphastarl_val = storage.alphastarl[i, t_abs]
+                    betal_val = storage.betal[i, future_time_abs]
+                    obs_potential = cB[d, i] - offset
+                    dur_potential = dp[d, i]
+                    
+                    log_prob = dur_potential + alphastarl_val + betal_val + obs_potential - normalizer
+                    
+                    # logaddexp(..., logpmfs[:T-t], out=logpmfs[:T-t])
+                    # Accumulate in logpmfs[i, d] (note: we index by duration, not time remaining)
+                    if d <= size(logpmfs, 2)
+                        logpmfs[i, d] = logaddexp(logpmfs[i, d], log_prob)
+                    end
+                end
+            end
+        end
+    end
+    
+    # Convert to probabilities: expected_durations = exp(logpmfs.T)
+    fill!(storage.expected_durations, zero(R))
+    for i in 1:N
+        for d in 1:min(max_duration, size(logpmfs, 2))
+            if isfinite(logpmfs[i, d])
+                storage.expected_durations[i, d] = exp(logpmfs[i, d])
+            end
+        end
+    end
+    
+    return nothing
 end
 
 function _forward_backward!(
@@ -285,6 +354,8 @@ function _forward_backward!(
         end
         storage.ξ[t2] .= zero(R)
     end
+
+     _compute_expected_durations!(storage, hsmm, obs_seq, control_seq, seq_ends, k)
     
     return nothing
 end
