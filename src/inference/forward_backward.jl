@@ -174,61 +174,55 @@ function _compute_expected_durations!(
     seq_ends::AbstractVectorOrNTuple{Int},
     k::Integer
 ) where {R}
-    
+
     t1, t2 = seq_limits(seq_ends, k)
     T = t2 - t1 + 1
     N = length(hsmm)
     max_duration = storage.max_duration
-    normalizer = storage.logL[k]
-    
-    # Initialize expected_durations
-    logpmfs = fill(-Inf, N, T)
-    
-    # for each time t, accumulate duration probabilities
+
+    # normalizer = storage.logL[k] i think this is wrong as the normalizer. When switching to 
+    # using (cB[:, i] / d) seems to have fixed issue where we seem to penalize longer durations
+
+    logpmfs = fill(-Inf, N, max_duration)
+
+    # Loop over time
     for t_rel in 1:T
         t_abs = t1 + t_rel - 1
-        
+
         # Get potentials for this time step
-        cB, offset = cumulative_obs_potentials(storage, hsmm, obs_seq, control_seq, t_rel, max_duration)
+        cB, _ = cumulative_obs_potentials(storage, hsmm, obs_seq, control_seq, t_rel, max_duration)
         dp = dur_potentials(hsmm, t_rel, max_duration, T)
-        
-        # For each state and possible duration starting at t
+
         for i in 1:N
             max_dur = min(max_duration, size(cB, 1), size(dp, 1), T - t_rel + 1)
-            
+
             for d in 1:max_dur
-                future_time_rel = t_rel + d - 1
                 future_time_abs = t_abs + d - 1
-                
+
                 if future_time_abs <= t2
-                    # dur_potentials(t) + alphastarl[t] + betal[t:] + cB - (normalizer + offset)
-                    alphastarl_val = storage.alphastarl[i, t_abs]
-                    betal_val = storage.betal[i, future_time_abs]
-                    obs_potential = cB[d, i] - offset
-                    dur_potential = dp[d, i]
-                    
-                    log_prob = dur_potential + alphastarl_val + betal_val + obs_potential - normalizer
-                    
-                    # logaddexp(..., logpmfs[:T-t], out=logpmfs[:T-t])
-                    # Accumulate in logpmfs[i, d] (note: we index by duration, not time remaining)
-                    if d <= size(logpmfs, 2)
-                        logpmfs[i, d] = logaddexp(logpmfs[i, d], log_prob)
-                    end
+                    log_prob = dp[d, i] +
+                               storage.alphastarl[i, t_abs] +
+                               storage.betal[i, future_time_abs] +
+                               (cB[d, i] / d) # - normalizer
+
+                    # Accumulate in log-space
+                    logpmfs[i, d] = logaddexp(logpmfs[i, d], log_prob)
                 end
             end
         end
     end
-    
-    # Convert to probabilities: expected_durations = exp(logpmfs.T)
+
+    # Normalize to get proper probabilities (or expected counts)
     fill!(storage.expected_durations, zero(R))
     for i in 1:N
-        for d in 1:min(max_duration, size(logpmfs, 2))
+        logZ = logsumexp(view(logpmfs, i, :))
+        for d in 1:max_duration
             if isfinite(logpmfs[i, d])
-                storage.expected_durations[i, d] = exp(logpmfs[i, d])
+                storage.expected_durations[i, d] = exp(logpmfs[i, d] - logZ)
             end
         end
     end
-    
+
     return nothing
 end
 
