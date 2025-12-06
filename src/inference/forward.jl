@@ -224,6 +224,14 @@ struct HSMMForwardBackwardStorage{R<:Real,M<:AbstractMatrix{R}}
 
     "maximum duration considered"
     max_duration::Int
+
+    # Work buffers to avoid allocations
+    "work buffer for cumulative observation potentials"
+    cB_buffer::Matrix{R}
+    "work buffer for duration potentials"
+    dp_buffer::Matrix{R}
+    "work buffer for survival potentials"
+    surv_buffer::Vector{R}
 end
 
 Base.eltype(::HSMMForwardBackwardStorage{R}) where {R} = R
@@ -257,6 +265,28 @@ function initialize_hsmm_forward(
 end
 
 # Helper functions for HSMMs
+
+function cumulative_obs_potentials!(
+    cB::AbstractMatrix, storage, hsmm, obs_seq, control, t::Int, max_duration::Int
+)
+    N, T = size(storage.B)
+    stop = min(T, t + max_duration - 1)
+    len = stop - t + 1
+
+    # Compute cumulative sum from t onwards, in-place
+    for τ in 1:len
+        time_idx = t + τ - 1
+        for i in 1:N
+            if τ == 1
+                cB[τ, i] = storage.B[i, time_idx]
+            else
+                cB[τ, i] = cB[τ - 1, i] + storage.B[i, time_idx]
+            end
+        end
+    end
+
+    return len, 0.0  # return length and offset
+end
 
 function cumulative_obs_potentials(
     storage, hsmm, obs_seq, control, t::Int, max_duration::Int
@@ -314,6 +344,20 @@ function reverse_cumulative_obs_potentials(
     return cB
 end
 
+function dur_potentials!(dp::AbstractMatrix, hsmm, t::Int, max_duration::Int, T::Int)
+    durations = duration_distributions(hsmm)
+    N = length(durations)
+    stop = min(max_duration, T - t + 1)
+
+    for d in 1:stop
+        for i in 1:N
+            dp[d, i] = logpdf(durations[i], d)
+        end
+    end
+
+    return stop
+end
+
 function dur_potentials(hsmm, t::Int, max_duration::Int, T::Int)
     durations = duration_distributions(hsmm)
     N = length(durations)
@@ -343,6 +387,21 @@ function reverse_dur_potentials(hsmm, t::Int, max_duration::Int)
     end
 
     return aDl
+end
+
+function dur_survival_potentials!(surv::AbstractVector, hsmm, t::Int, max_duration::Int, T::Int)
+    durations = duration_distributions(hsmm)
+    N = length(durations)
+    remaining_time = T - t + 1
+
+    fill!(surv, -Inf)
+    if remaining_time <= max_duration
+        for i in 1:N
+            surv[i] = logccdf(durations[i], remaining_time)
+        end
+    end
+
+    return nothing
 end
 
 function dur_survival_potentials(hsmm, t::Int, max_duration::Int, T::Int)

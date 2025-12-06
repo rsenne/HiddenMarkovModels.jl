@@ -134,7 +134,7 @@ function baum_welch!(
 )
     for _ in 1:max_iterations
         forward_backward!(fb_storage, hsmm, obs_seq, control_seq; seq_ends)
-        push!(logL_evolution, logdensityof(hsmm) + sum(fb_storage.logL))
+        push!(logL_evolution, sum(fb_storage.logL))
         fit!(hsmm, fb_storage, obs_seq; seq_ends)  # Note: no control_seq for now
         if baum_welch_has_converged(logL_evolution; atol, loglikelihood_increasing)
             break

@@ -160,6 +160,11 @@ function initialize_hsmm_forward_backward(
 
     expected_durations = Matrix{R}(undef, N, max_duration)
 
+    # Work buffers
+    cB_buffer = Matrix{R}(undef, max_duration, N)
+    dp_buffer = Matrix{R}(undef, max_duration, N)
+    surv_buffer = Vector{R}(undef, N)
+
     return HSMMForwardBackwardStorage{R,M}(
         γ,
         ξ,
@@ -172,6 +177,9 @@ function initialize_hsmm_forward_backward(
         betastarl,
         expected_durations,
         max_duration,
+        cB_buffer,
+        dp_buffer,
+        surv_buffer,
     )
 end
 
@@ -197,14 +205,14 @@ function _compute_expected_durations!(
     for t_rel in 1:T
         t_abs = t1 + t_rel - 1
 
-        # Get potentials for this time step
-        cB, _ = cumulative_obs_potentials(
-            storage, hsmm, obs_seq, control_seq, t_rel, max_duration
+        # Get potentials for this time step (in-place)
+        cB_len, _ = cumulative_obs_potentials!(
+            storage.cB_buffer, storage, hsmm, obs_seq, control_seq, t_rel, max_duration
         )
-        dp = dur_potentials(hsmm, t_rel, max_duration, T)
+        dp_len = dur_potentials!(storage.dp_buffer, hsmm, t_rel, max_duration, T)
 
         for i in 1:N
-            max_dur = min(max_duration, size(cB, 1), size(dp, 1), T - t_rel + 1)
+            max_dur = min(max_duration, cB_len, dp_len, T - t_rel + 1)
 
             for d in 1:max_dur
                 future_time_abs = t_abs + d - 1
@@ -215,8 +223,8 @@ function _compute_expected_durations!(
                     #   sum of log obs likelihoods + log P(future | end at t+d-1)
                     log_prob =
                         storage.alphastarl[i, t_abs] +
-                        dp[d, i] +
-                        cB[d, i] +
+                        storage.dp_buffer[d, i] +
+                        storage.cB_buffer[d, i] +
                         storage.betal[i, future_time_abs] - normalizer
 
                     # Accumulate in log-space
@@ -266,21 +274,21 @@ function _forward_backward!(
     for t in t2:-1:t1
         t_rel = t - t1 + 1
 
-        # Compute betastarl[i, t] using cumulative potentials
-        cB, offset = cumulative_obs_potentials(
-            storage, hsmm, obs_seq, control_seq, t_rel, max_duration
+        # Compute betastarl[i, t] using cumulative potentials (in-place)
+        cB_len, offset = cumulative_obs_potentials!(
+            storage.cB_buffer, storage, hsmm, obs_seq, control_seq, t_rel, max_duration
         )
-        dp = dur_potentials(hsmm, t_rel, max_duration, T)
+        dp_len = dur_potentials!(storage.dp_buffer, hsmm, t_rel, max_duration, T)
 
         for i in 1:N
             betastarl_val = -Inf
 
             # Sum over possible durations
-            for τ in 1:min(size(cB, 1), size(dp, 1))
+            for τ in 1:min(cB_len, dp_len)
                 future_time = t + τ - 1
                 if future_time <= t2
                     betal_val = storage.betal[i, future_time]
-                    term = betal_val + cB[τ, i] + dp[τ, i]
+                    term = betal_val + storage.cB_buffer[τ, i] + storage.dp_buffer[τ, i]
                     betastarl_val = logaddexp(betastarl_val, term)
                 end
             end
@@ -289,10 +297,10 @@ function _forward_backward!(
                 betastarl_val -= offset
 
                 # Add right censoring if applicable
-                if t + size(cB, 1) - 1 >= t2
-                    survival_terms = dur_survival_potentials(hsmm, t_rel, max_duration, T)
-                    if isfinite(survival_terms[i])
-                        censoring_term = cB[end, i] - offset + survival_terms[i]
+                if t + cB_len - 1 >= t2
+                    dur_survival_potentials!(storage.surv_buffer, hsmm, t_rel, max_duration, T)
+                    if isfinite(storage.surv_buffer[i])
+                        censoring_term = storage.cB_buffer[cB_len, i] - offset + storage.surv_buffer[i]
                         betastarl_val = logaddexp(betastarl_val, censoring_term)
                     end
                 end
