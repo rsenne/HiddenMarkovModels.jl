@@ -100,10 +100,12 @@ function baum_welch(
     loglikelihood_increasing=true,
 )
     hsmm = deepcopy(hsmm_guess)
-    fb_storage = initialize_hsmm_forward_backward(hsmm, obs_seq, control_seq; seq_ends, max_duration)
+    fb_storage = initialize_hsmm_forward_backward(
+        hsmm, obs_seq, control_seq; seq_ends, max_duration
+    )
     logL_evolution = eltype(fb_storage)[]
     sizehint!(logL_evolution, max_iterations)
-    
+
     baum_welch!(
         fb_storage,
         logL_evolution,
@@ -115,7 +117,7 @@ function baum_welch(
         max_iterations,
         loglikelihood_increasing,
     )
-    
+
     return hsmm, logL_evolution
 end
 

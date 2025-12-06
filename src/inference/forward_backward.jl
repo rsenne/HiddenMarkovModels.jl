@@ -130,8 +130,8 @@ function initialize_hsmm_forward_backward(
     obs_seq::AbstractVector,
     control_seq::AbstractVector;
     seq_ends::AbstractVectorOrNTuple{Int},
-    max_duration::Int = 50,
-    transition_marginals::Bool = true
+    max_duration::Int=50,
+    transition_marginals::Bool=true,
 )
     N, T, K = length(hsmm), length(obs_seq), length(seq_ends)
     R = eltype(hsmm, obs_seq[1], control_seq[1])
@@ -147,22 +147,31 @@ function initialize_hsmm_forward_backward(
         ξ[T] = zero(trans)
     end
     logL = Vector{R}(undef, K)
-    
+
     # Forward quantities
     alphastarl = Matrix{R}(undef, N, T)
     alphal = Matrix{R}(undef, N, T)
     B = Matrix{R}(undef, N, T)
     c = Vector{R}(undef, T)
-    
+
     # Backward quantities  
     betal = Matrix{R}(undef, N, T)
     betastarl = Matrix{R}(undef, N, T)
-    
+
     expected_durations = Matrix{R}(undef, N, max_duration)
 
     return HSMMForwardBackwardStorage{R,M}(
-        γ, ξ, logL, alphastarl, alphal, B, c, betal, betastarl, 
-        expected_durations, max_duration
+        γ,
+        ξ,
+        logL,
+        alphastarl,
+        alphal,
+        B,
+        c,
+        betal,
+        betastarl,
+        expected_durations,
+        max_duration,
     )
 end
 
@@ -172,16 +181,15 @@ function _compute_expected_durations!(
     obs_seq::AbstractVector,
     control_seq::AbstractVector,
     seq_ends::AbstractVectorOrNTuple{Int},
-    k::Integer
+    k::Integer,
 ) where {R}
-
     t1, t2 = seq_limits(seq_ends, k)
     T = t2 - t1 + 1
     N = length(hsmm)
     max_duration = storage.max_duration
 
-    # normalizer = storage.logL[k] i think this is wrong as the normalizer. When switching to 
-    # using (cB[:, i] / d) seems to have fixed issue where we seem to penalize longer durations
+    # Use sequence log-likelihood as normalizer
+    normalizer = storage.logL[k]
 
     logpmfs = fill(-Inf, N, max_duration)
 
@@ -190,7 +198,9 @@ function _compute_expected_durations!(
         t_abs = t1 + t_rel - 1
 
         # Get potentials for this time step
-        cB, _ = cumulative_obs_potentials(storage, hsmm, obs_seq, control_seq, t_rel, max_duration)
+        cB, _ = cumulative_obs_potentials(
+            storage, hsmm, obs_seq, control_seq, t_rel, max_duration
+        )
         dp = dur_potentials(hsmm, t_rel, max_duration, T)
 
         for i in 1:N
@@ -200,10 +210,14 @@ function _compute_expected_durations!(
                 future_time_abs = t_abs + d - 1
 
                 if future_time_abs <= t2
-                    log_prob = dp[d, i] +
-                               storage.alphastarl[i, t_abs] +
-                               storage.betal[i, future_time_abs] +
-                               (cB[d, i] / d) # - normalizer
+                    # Compute log P(state=i, duration=d starts at t | observations)
+                    # = log P(reach state i at t) + log P(duration d) +
+                    #   sum of log obs likelihoods + log P(future | end at t+d-1)
+                    log_prob =
+                        storage.alphastarl[i, t_abs] +
+                        dp[d, i] +
+                        cB[d, i] +
+                        storage.betal[i, future_time_abs] - normalizer
 
                     # Accumulate in log-space
                     logpmfs[i, d] = logaddexp(logpmfs[i, d], log_prob)
@@ -212,13 +226,13 @@ function _compute_expected_durations!(
         end
     end
 
-    # Normalize to get proper probabilities (or expected counts)
+    # Convert from log-space to expected counts
+    # Note: We don't normalize here because we want expected COUNTS, not probabilities
     fill!(storage.expected_durations, zero(R))
     for i in 1:N
-        logZ = logsumexp(view(logpmfs, i, :))
         for d in 1:max_duration
             if isfinite(logpmfs[i, d])
-                storage.expected_durations[i, d] = exp(logpmfs[i, d] - logZ)
+                storage.expected_durations[i, d] = exp(logpmfs[i, d])
             end
         end
     end
@@ -233,46 +247,47 @@ function _forward_backward!(
     control_seq::AbstractVector,
     seq_ends::AbstractVectorOrNTuple{Int},
     k::Integer;
-    transition_marginals::Bool = true,
+    transition_marginals::Bool=true,
 ) where {R}
-    
     t1, t2 = seq_limits(seq_ends, k)
     T = t2 - t1 + 1
     N = length(hsmm)
     max_duration = storage.max_duration
-    
+
     # Run forward pass first
     _forward!(storage, hsmm, obs_seq, control_seq, seq_ends, k)
-    
+
     # Backward pass using PyHSMM logic
     # Initialize betal[i, T] = 0
     for i in 1:N
-        storage.betal[i, t2] = zero(R) 
+        storage.betal[i, t2] = zero(R)
     end
-    
+
     for t in t2:-1:t1
         t_rel = t - t1 + 1
-        
+
         # Compute betastarl[i, t] using cumulative potentials
-        cB, offset = cumulative_obs_potentials(storage, hsmm, obs_seq, control_seq, t_rel, max_duration)
+        cB, offset = cumulative_obs_potentials(
+            storage, hsmm, obs_seq, control_seq, t_rel, max_duration
+        )
         dp = dur_potentials(hsmm, t_rel, max_duration, T)
-        
+
         for i in 1:N
-            logsum_terms = R[]
-            
+            betastarl_val = -Inf
+
             # Sum over possible durations
             for τ in 1:min(size(cB, 1), size(dp, 1))
                 future_time = t + τ - 1
                 if future_time <= t2
-                    betal_val = storage.betal[i, future_time]  
+                    betal_val = storage.betal[i, future_time]
                     term = betal_val + cB[τ, i] + dp[τ, i]
-                    push!(logsum_terms, term)
+                    betastarl_val = logaddexp(betastarl_val, term)
                 end
             end
-            
-            if !isempty(logsum_terms)
-                betastarl_val = logsumexp(logsum_terms) - offset
-                
+
+            if isfinite(betastarl_val)
+                betastarl_val -= offset
+
                 # Add right censoring if applicable
                 if t + size(cB, 1) - 1 >= t2
                     survival_terms = dur_survival_potentials(hsmm, t_rel, max_duration, T)
@@ -281,76 +296,70 @@ function _forward_backward!(
                         betastarl_val = logaddexp(betastarl_val, censoring_term)
                     end
                 end
-                
-                storage.betastarl[i, t] = betastarl_val  
-            else
-                storage.betastarl[i, t] = -Inf  
             end
+
+            storage.betastarl[i, t] = betastarl_val
         end
-        
-        # Compute betal[i, t-1] from betastarl[j, t] 
+
+        # Compute betal[i, t-1] from betastarl[j, t]
         if t > t1
             logtrans = log_transition_matrix(hsmm, control_seq[t])
-            
+
             for i in 1:N
-                logsum_terms = R[]
+                betal_val = -Inf
                 for j in 1:N
-                    betastarl_val = storage.betastarl[j, t]  
+                    betastarl_val = storage.betastarl[j, t]
                     term = betastarl_val + logtrans[i, j]
-                    push!(logsum_terms, term)
+                    betal_val = logaddexp(betal_val, term)
                 end
-                
-                if !isempty(logsum_terms)
-                    storage.betal[i, t-1] = logsumexp(logsum_terms)  
-                else
-                    storage.betal[i, t-1] = -Inf  
-                end
+                storage.betal[i, t - 1] = betal_val
             end
         end
     end
-    
+
     # Compute state marginals γ[i,t] = exp(alphal[i,t] + betal[i,t] - normalizer)
     for t in t1:t2
-        logsum_terms = R[]
-        
+        # Compute normalizer
+        normalizer = -Inf
         for i in 1:N
-            alphal_val = storage.alphal[i, t] 
-            betal_val = storage.betal[i, t]  
+            alphal_val = storage.alphal[i, t]
+            betal_val = storage.betal[i, t]
             term = alphal_val + betal_val
-            push!(logsum_terms, term)
+            normalizer = logaddexp(normalizer, term)
         end
-        
-        normalizer = logsumexp(logsum_terms)
-        
+
+        # Compute marginals
         for i in 1:N
-            alphal_val = storage.alphal[i, t]  
-            betal_val = storage.betal[i, t]  
-            storage.γ[i, t] = exp(alphal_val + betal_val - normalizer)  
+            alphal_val = storage.alphal[i, t]
+            betal_val = storage.betal[i, t]
+            storage.γ[i, t] = exp(alphal_val + betal_val - normalizer)
         end
     end
-    
+
     # Compute transition marginals if requested
     if transition_marginals
-        for t in t1:(t2-1)
+        for t in t1:(t2 - 1)
             fill!(storage.ξ[t], zero(R))
-            logtrans = log_transition_matrix(hsmm, control_seq[t+1])
-            
+            logtrans = log_transition_matrix(hsmm, control_seq[t + 1])
+
             for i in 1:N
                 for j in 1:N
                     # ξ[t][i,j] = exp(alphal[i,t] + logtrans[i,j] + betastarl[j,t+1] - normalizer)
-                    alphal_val = storage.alphal[i, t]  
-                    betastarl_val = storage.betastarl[j, t+1]  
+                    alphal_val = storage.alphal[i, t]
+                    betastarl_val = storage.betastarl[j, t + 1]
                     normalizer = storage.logL[k]  # Use sequence log-likelihood as normalizer
-                    
-                    storage.ξ[t][i, j] = exp(alphal_val + logtrans[i, j] + betastarl_val - normalizer)
+
+                    storage.ξ[t][i, j] = exp(
+                        alphal_val + logtrans[i, j] + betastarl_val - normalizer
+                    )
                 end
             end
         end
         storage.ξ[t2] .= zero(R)
     end
 
-     _compute_expected_durations!(storage, hsmm, obs_seq, control_seq, seq_ends, k)
-    
+    _compute_expected_durations!(storage, hsmm, obs_seq, control_seq, seq_ends, k)
+
     return nothing
 end
 

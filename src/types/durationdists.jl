@@ -11,8 +11,8 @@ Mean duration: 1/p
 """
 mutable struct GeometricDuration{T<:Real} <: DiscreteUnivariateDistribution
     p::T
-    
-    function GeometricDuration(p::T) where T
+
+    function GeometricDuration(p::T) where {T}
         @argcheck 0 < p <= 1 "Success probability must be in (0,1]"
         return new{T}(p)
     end
@@ -56,7 +56,9 @@ function Base.rand(rng::AbstractRNG, d::GeometricDuration)
     return rand(rng, Geometric(d.p)) + 1
 end
 
-function StatsAPI.fit!(d::GeometricDuration{T}, durations::AbstractVector{Int}, weights::AbstractVector) where T
+function StatsAPI.fit!(
+    d::GeometricDuration{T}, durations::AbstractVector{Int}, weights::AbstractVector
+) where {T}
     weighted_mean = sum(durations .* weights) / sum(weights)
     new_p = 1 / weighted_mean
     d.p = clamp(new_p, 1e-10, 1.0)
@@ -78,8 +80,8 @@ Mean duration: λ + 1
 """
 mutable struct PoissonDuration{T<:Real} <: DiscreteUnivariateDistribution
     λ::T
-    
-    function PoissonDuration(λ::T) where T
+
+    function PoissonDuration(λ::T) where {T}
         @argcheck λ > 0 "Rate parameter must be positive"
         return new{T}(λ)
     end
@@ -126,7 +128,9 @@ function Base.rand(rng::AbstractRNG, d::PoissonDuration)
     return rand(rng, Poisson(d.λ)) + 1
 end
 
-function StatsAPI.fit!(d::PoissonDuration{T}, durations::AbstractVector{Int}, weights::AbstractVector) where T
+function StatsAPI.fit!(
+    d::PoissonDuration{T}, durations::AbstractVector{Int}, weights::AbstractVector
+) where {T}
     weighted_mean = sum(durations .* weights) / sum(weights)
     new_λ = max(weighted_mean - 1, 1e-10)
     d.λ = new_λ
@@ -151,7 +155,7 @@ Variance: r(1-p)/p²
 mutable struct NegBinomialDuration{T<:Real} <: DiscreteUnivariateDistribution
     r::T
     p::T
-    
+
     function NegBinomialDuration(r::T, p::S) where {T,S}
         r_promoted, p_promoted = promote(r, p)
         @argcheck r_promoted > 0 "Number of successes must be positive"
@@ -160,7 +164,9 @@ mutable struct NegBinomialDuration{T<:Real} <: DiscreteUnivariateDistribution
     end
 end
 
-Base.show(io::IO, d::NegBinomialDuration) = print(io, "NegBinomialDuration(r=$(d.r), p=$(d.p))")
+function Base.show(io::IO, d::NegBinomialDuration)
+    print(io, "NegBinomialDuration(r=$(d.r), p=$(d.p))")
+end
 
 function Distributions.pdf(d::NegBinomialDuration, k::Int)
     return k >= 1 ? pdf(NegativeBinomial(d.r, d.p), k-1) : 0.0
@@ -201,16 +207,18 @@ function Base.rand(rng::AbstractRNG, d::NegBinomialDuration)
     return rand(rng, NegativeBinomial(d.r, d.p)) + 1
 end
 
-function StatsAPI.fit!(d::NegBinomialDuration{T}, durations::AbstractVector{Int}, weights::AbstractVector) where T
+function StatsAPI.fit!(
+    d::NegBinomialDuration{T}, durations::AbstractVector{Int}, weights::AbstractVector
+) where {T}
     # Shift back to {0,1,2,...} for fitting
     shifted_durations = durations .- 1
     weighted_mean = sum(shifted_durations .* weights) / sum(weights)
-    weighted_var = sum((shifted_durations .- weighted_mean).^2 .* weights) / sum(weights)
-    
+    weighted_var = sum((shifted_durations .- weighted_mean) .^ 2 .* weights) / sum(weights)
+
     if weighted_var > weighted_mean  # Overdispersed
         p_est = weighted_mean / weighted_var
         r_est = weighted_mean * p_est / (1 - p_est)
-        
+
         d.p = clamp(p_est, 1e-10, 1 - 1e-10)
         d.r = max(r_est, 1e-10)
     else
@@ -218,6 +226,6 @@ function StatsAPI.fit!(d::NegBinomialDuration{T}, durations::AbstractVector{Int}
         d.p = 0.5
         d.r = 2 * weighted_mean
     end
-    
+
     return nothing
 end
