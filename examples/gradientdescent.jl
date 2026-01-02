@@ -14,12 +14,13 @@ We will explore both approaches below.
 using DensityInterface
 using Distributions
 using HiddenMarkovModels
+using HMMTest # src
 using LinearAlgebra
 using Optim
 using Random
 using StableRNGs
 using StatsAPI
-using Test
+using Test # src
 
 rng = StableRNG(42)
 
@@ -36,7 +37,7 @@ mutable struct NormalModel{T}
     logσ::T  # unconstrained parameterization; σ = exp(logσ)
 end
 
-σ(mod::NormalModel) = exp(mod.logσ)
+stddev(mod::NormalModel) = exp(mod.logσ)
 
 #= 
 We have defined a simple probability model with two parameters: the mean and the
@@ -48,14 +49,14 @@ Next, we provide the minimal interface expected by HiddenMarkovModels.jl:
 =#
 
 function DensityInterface.logdensityof(mod::NormalModel, obs::T) where {T<:Real}
-    s = σ(mod)
+    s = stddev(mod)
     return -0.5 * log(2π) - log(s) - 0.5 * ((obs - mod.μ) / s)^2
 end
 
 DensityInterface.DensityKind(::NormalModel) = DensityInterface.HasDensity()
 
 function Random.rand(rng::AbstractRNG, mod::NormalModel)
-    return rand(rng, Normal(mod.μ, σ(mod)))
+    return rand(rng, Normal(mod.μ, stddev(mod)))
 end
 
 #= 
@@ -65,13 +66,11 @@ weak priors to regularize the parameters. We use:
 - A moderate-strength Normal prior on logσ that pulls σ toward ~1
 =#
 
-const μ_prior    = Normal(0.0, 10.0)
+const μ_prior = Normal(0.0, 10.0)
 const logσ_prior = Normal(log(1.0), 0.5)
 
 function StatsAPI.fit!(
-    mod::NormalModel,
-    data::AbstractVector{<:Real},
-    weights::AbstractVector{<:Real},
+    mod::NormalModel, data::AbstractVector{<:Real}, weights::AbstractVector{<:Real}
 )
     function neglogpost(θ)
         μ, logσ = θ
@@ -91,7 +90,7 @@ function StatsAPI.fit!(
     end
 
     θ0 = [mod.μ, mod.logσ]
-    result = Optim.optimize(neglogpost, θ0, BFGS(); autodiff = :forward)
+    result = Optim.optimize(neglogpost, θ0, BFGS(); autodiff=:forward)
     mod.μ, mod.logσ = Optim.minimizer(result)
     return mod
 end
@@ -100,15 +99,15 @@ end
 Now that we have fully defined our observation model, we can create an HMM using it.
 =#
 
-init_dist  = [0.2, 0.7, 0.1]
-init_trans = [0.9 0.05 0.05;
-              0.075 0.9 0.025;
-              0.1 0.1 0.8]
+init_dist = [0.2, 0.7, 0.1]
+init_trans = [
+    0.9 0.05 0.05;
+    0.075 0.9 0.025;
+    0.1 0.1 0.8
+]
 
 obs_dists = [
-    NormalModel(-3.0, log(0.25)),
-    NormalModel( 0.0, log(0.5)),
-    NormalModel( 3.0, log(0.75)),
+    NormalModel(-3.0, log(0.25)), NormalModel(0.0, log(0.5)), NormalModel(3.0, log(0.75))
 ]
 
 hmm_true = HMM(init_dist, init_trans, obs_dists)
@@ -126,15 +125,15 @@ HMM parameters; during the M-step, our observation model parameters are fit via
 gradient-based optimization (BFGS).
 =#
 
-init_dist_guess  = fill(1.0 / 3, 3)
-init_trans_guess = [0.98 0.01 0.01;
-                    0.01 0.98 0.01;
-                    0.01 0.01 0.98]
+init_dist_guess = fill(1.0 / 3, 3)
+init_trans_guess = [
+    0.98 0.01 0.01;
+    0.01 0.98 0.01;
+    0.01 0.01 0.98
+]
 
 obs_dist_guess = [
-    NormalModel(-2.0, log(1.0)),
-    NormalModel( 2.0, log(1.0)),
-    NormalModel( 0.0, log(1.0)),
+    NormalModel(-2.0, log(1.0)), NormalModel(2.0, log(1.0)), NormalModel(0.0, log(1.0))
 ]
 
 hmm_guess = HMM(init_dist_guess, init_trans_guess, obs_dist_guess)
@@ -178,10 +177,14 @@ end
 function unpack_to_hmm(θ::AbstractVector, K::Int)
     idx = 1
 
-    ηπ   = @view θ[idx:idx+K-1]; idx += K
-    ηA   = reshape(@view(θ[idx:idx+K*K-1]), K, K); idx += K*K
-    μ    = @view θ[idx:idx+K-1]; idx += K
-    logσ = @view θ[idx:idx+K-1]; idx += K
+    ηπ = @view θ[idx:(idx + K - 1)];
+    idx += K
+    ηA = reshape(@view(θ[idx:(idx + K * K - 1)]), K, K);
+    idx += K*K
+    μ = @view θ[idx:(idx + K - 1)];
+    idx += K
+    logσ = @view θ[idx:(idx + K - 1)];
+    idx += K
 
     π = softmax(ηπ)
     A = rowsoftmax(ηA)
@@ -201,7 +204,7 @@ function hmm_to_θ0(hmm::HMM)
     ηπ = log.(π .+ eps())
     ηA = log.(A .+ eps())
 
-    μ    = [hmm.dists[k].μ    for k in 1:K]
+    μ = [hmm.dists[k].μ for k in 1:K]
     logσ = [hmm.dists[k].logσ for k in 1:K]
 
     return vcat(ηπ, vec(ηA), μ, logσ)
@@ -218,18 +221,17 @@ K = 3
 
 obj(θ) = negloglik_from_θ(θ, obs_seq, K)
 
-result = Optim.optimize(obj, θ0, BFGS(); autodiff = :forward)
+result = Optim.optimize(obj, θ0, BFGS(); autodiff=:forward)
 hmm_est2 = unpack_to_hmm(result.minimizer, K)
 
 #= 
 We have now trained an HMM using gradient-based optimization over *all* parameters!
-Let’s quickly verify that it matches the EM solution above (up to numerical tolerance).
 =#
 
-isapprox(hmm_est.init, hmm_est2.init; atol=1e-3)
-isapprox(hmm_est.trans, hmm_est2.trans; atol=1e-3)
+@test isapprox(hmm_est.init, hmm_est2.init; atol=1e-3) # src
+@test isapprox(hmm_est.trans, hmm_est2.trans; atol=1e-3) # src
 
-for k in 1:K
-    isapprox(hmm_est.dists[k].μ, hmm_est2.dists[k].μ; atol=1e-3)
-    isapprox(σ(hmm_est.dists[k]), σ(hmm_est2.dists[k]); atol=1e-3)
-end
+for k in 1:K # src
+    @test isapprox(hmm_est.dists[k].μ, hmm_est2.dists[k].μ; atol=1e-3) # src
+    @test isapprox(stddev(hmm_est.dists[k]), stddev(hmm_est2.dists[k]); atol=1e-3) # src
+end # src

@@ -51,6 +51,7 @@ pages = [
         joinpath("examples", "controlled.md"),
         joinpath("examples", "autoregression.md"),
         joinpath("examples", "autodiff.md"),
+        joinpath("examples", "gradientdescent.md"),
     ],
     "API reference" => "api.md",
     "Advanced" => ["alternatives.md", "debugging.md", "formulas.md"],
