@@ -75,14 +75,14 @@ function StatsAPI.fit!(
     function neglogpost(θ)
         μ, logσ = θ
 
-        # Weighted negative log-likelihood
+        #- Weighted negative log-likelihood
         nll = 0.0
         tmp = NormalModel(μ, logσ)
         for (y, w) in zip(data, weights)
             nll += -w * logdensityof(tmp, y)
         end
 
-        # Negative log-prior terms (MAP)
+        #- Negative log-prior terms (MAP)
         nll += -logpdf(μ_prior, μ)
         nll += -logpdf(logσ_prior, logσ)
 
@@ -182,7 +182,7 @@ function unpack_to_hmm(θ::AbstractVector, K::Int)
     ηA = reshape(@view(θ[idx:(idx + K * K - 1)]), K, K);
     idx += K*K
     μ = @view θ[idx:(idx + K - 1)];
-    idx += K
+    idx += K13
     logσ = @view θ[idx:(idx + K - 1)];
     idx += K
 
@@ -200,8 +200,7 @@ function hmm_to_θ0(hmm::HMM)
     π = hmm.init
     A = hmm.trans
 
-    # Logits; any additive constant is irrelevant under softmax
-    ηπ = log.(π .+ eps())
+    ηπ = log.(π .+ eps()) # Logits + eps() for numerical stability
     ηA = log.(A .+ eps())
 
     μ = [hmm.dists[k].μ for k in 1:K]
