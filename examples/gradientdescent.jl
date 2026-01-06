@@ -4,7 +4,7 @@
 In this tutorial we explore two ways to use gradient descent when fitting HMMs:
 
 1. Fitting parameters of an observation model that do not have closed-form updates
-   (e.g., GLMs, neural networks, etc.).
+   (e.g., GLMs, neural networks, etc.), inside the EM algorithm.
 2. Fitting the entire HMM with gradient-based optimization by leveraging automatic
    differentiation.
 
@@ -12,7 +12,6 @@ We will explore both approaches below.
 =#
 
 using DensityInterface
-using Distributions
 using HiddenMarkovModels
 using HMMTest # src
 using LinearAlgebra
@@ -41,29 +40,29 @@ stddev(mod::NormalModel) = exp(mod.logσ)
 
 #= 
 We have defined a simple probability model with two parameters: the mean and the
-log of the standard deviation. Using logσ is intentional so we can optimize over
-all real numbers without worrying about the positivity constraint on σ.
+log of the standard deviation. Using `logσ` is intentional so we can optimize over
+all real numbers without worrying about the positivity constraint on `σ`.
 
 Next, we provide the minimal interface expected by HiddenMarkovModels.jl:
-(logdensityof, rand, fit!).
+`(logdensityof, rand, fit!)`.
 =#
 
 function DensityInterface.logdensityof(mod::NormalModel, obs::T) where {T<:Real}
     s = stddev(mod)
-    return -0.5 * log(2π) - log(s) - 0.5 * ((obs - mod.μ) / s)^2
+    return - log(2π) / 2 - log(s) - ((obs - mean(mod)) / s)^2 / 2
 end
 
 DensityInterface.DensityKind(::NormalModel) = DensityInterface.HasDensity()
 
-function Random.rand(rng::AbstractRNG, mod::NormalModel)
-    return rand(rng, Normal(mod.μ, stddev(mod)))
+function Random.rand(rng::AbstractRNG, mod::NormalModel{T}) where {T}
+    return stddev(mod) * randn(rng, T) + mean(mod)
 end
 
 #= 
 Because we are fitting a Gaussian (and the variance can collapse to ~0), we add
 weak priors to regularize the parameters. We use:
-- A weak Normal prior on μ
-- A moderate-strength Normal prior on logσ that pulls σ toward ~1
+- A weak Normal prior on `μ`
+- A moderate-strength Normal prior on `logσ` that pulls `σ` toward ~1
 =#
 
 const μ_prior = Normal(0.0, 10.0)
@@ -114,7 +113,7 @@ hmm_true = HMM(init_dist, init_trans, obs_dists)
 
 #= 
 We can now generate data from this HMM.
-Note: rand(rng, hmm, T) returns (state_seq, obs_seq).
+Note: `rand(rng, hmm, T)` returns `(state_seq, obs_seq)`.
 =#
 
 state_seq, obs_seq = rand(rng, hmm_true, 10_000)
@@ -155,8 +154,8 @@ arbitrary parameterized HMMs.
 
 To respect HMM constraints, we optimize unconstrained parameters and map them to
 valid probability distributions via softmax:
-- π = softmax(ηπ)
-- each row of A = softmax(row logits)
+- `π = softmax(ηπ)`
+- each row of `A` = `softmax(row_logits)`
 =#
 
 # Stable softmax
