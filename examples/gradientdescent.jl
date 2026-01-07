@@ -11,9 +11,10 @@ In this tutorial we explore two ways to use gradient descent when fitting HMMs:
 We will explore both approaches below.
 =#
 
+using ComponentArrays
 using DensityInterface
 using HiddenMarkovModels
-using HMMTest # src
+# using HMMTest # src
 using LinearAlgebra
 using Optim
 using Random
@@ -36,6 +37,7 @@ mutable struct NormalModel{T}
     logσ::T  # unconstrained parameterization; σ = exp(logσ)
 end
 
+mean(mod::NormalModel) = mod.μ
 stddev(mod::NormalModel) = exp(mod.logσ)
 
 #= 
@@ -65,31 +67,46 @@ weak priors to regularize the parameters. We use:
 - A moderate-strength Normal prior on `logσ` that pulls `σ` toward ~1
 =#
 
-const μ_prior = Normal(0.0, 10.0)
-const logσ_prior = Normal(log(1.0), 0.5)
+const μ_prior = NormalModel(0.0, log(10.0))
+const logσ_prior = NormalModel(log(1.0), log(0.5))
+
+function neglogpost(
+    μ::T, logσ::T,
+    data::AbstractVector{<:Real},
+    weights::AbstractVector{<:Real},
+    μ_prior::NormalModel,
+    logσ_prior::NormalModel,
+) where {T<:Real}
+    tmp = NormalModel(μ, logσ)
+
+    nll = mapreduce(i -> -weights[i] * logdensityof(tmp, data[i]), +, eachindex(data, weights))
+
+    nll += -logdensityof(μ_prior, μ)
+    nll += -logdensityof(logσ_prior, logσ)
+
+    return nll
+end
+
+function neglogpost(
+    θ::AbstractVector{T},
+    data::AbstractVector{<:Real},
+    weights::AbstractVector{<:Real},
+    μ_prior::NormalModel,
+    logσ_prior::NormalModel,
+) where {T<:Real}
+    μ, logσ = θ
+    return neglogpost(μ, logσ, data, weights, μ_prior, logσ_prior)
+end
 
 function StatsAPI.fit!(
-    mod::NormalModel, data::AbstractVector{<:Real}, weights::AbstractVector{<:Real}
+    mod::NormalModel,
+    data::AbstractVector{<:Real},
+    weights::AbstractVector{<:Real},
 )
-    function neglogpost(θ)
-        μ, logσ = θ
-
-        #- Weighted negative log-likelihood
-        nll = 0.0
-        tmp = NormalModel(μ, logσ)
-        for (y, w) in zip(data, weights)
-            nll += -w * logdensityof(tmp, y)
-        end
-
-        #- Negative log-prior terms (MAP)
-        nll += -logpdf(μ_prior, μ)
-        nll += -logpdf(logσ_prior, logσ)
-
-        return nll
-    end
-
-    θ0 = [mod.μ, mod.logσ]
-    result = Optim.optimize(neglogpost, θ0, BFGS(); autodiff=:forward)
+    T = promote_type(typeof(mod.μ), typeof(mod.logσ))
+    θ0 = T[T(mod.μ), T(mod.logσ)]
+    obj = θ -> neglogpost(θ, data, weights, μ_prior, logσ_prior)
+    result = Optim.optimize(obj, θ0, BFGS(); autodiff = :forward)
     mod.μ, mod.logσ = Optim.minimizer(result)
     return mod
 end
@@ -173,21 +190,12 @@ function rowsoftmax(M::AbstractMatrix)
     return A
 end
 
-function unpack_to_hmm(θ::AbstractVector, K::Int)
-    idx = 1
+function unpack_to_hmm(θ::ComponentVector)
+    K = length(θ.ηπ)
 
-    ηπ = @view θ[idx:(idx + K - 1)];
-    idx += K
-    ηA = reshape(@view(θ[idx:(idx + K * K - 1)]), K, K);
-    idx += K*K
-    μ = @view θ[idx:(idx + K - 1)];
-    idx += K13
-    logσ = @view θ[idx:(idx + K - 1)];
-    idx += K
-
-    π = softmax(ηπ)
-    A = rowsoftmax(ηA)
-    dists = [NormalModel(μ[k], logσ[k]) for k in 1:K]
+    π = softmax(θ.ηπ)
+    A = rowsoftmax(θ.ηA)
+    dists = [NormalModel(θ.μ[k], θ.logσ[k]) for k in 1:K]
 
     return HMM(π, A, dists)
 end
@@ -196,31 +204,30 @@ end
 function hmm_to_θ0(hmm::HMM)
     K = length(hmm.init)
 
-    π = hmm.init
-    A = hmm.trans
-
-    ηπ = log.(π .+ eps()) # Logits + eps() for numerical stability
-    ηA = log.(A .+ eps())
+    T = promote_type(eltype(hmm.init), eltype(hmm.trans), eltype(hmm.dists[1].μ), eltype(hmm.dists[1].logσ))
+    
+    ηπ = log.(hmm.init .+ eps(T))
+    ηA = log.(hmm.trans .+ eps(T))
 
     μ = [hmm.dists[k].μ for k in 1:K]
     logσ = [hmm.dists[k].logσ for k in 1:K]
 
-    return vcat(ηπ, vec(ηA), μ, logσ)
+    return ComponentVector(ηπ=ηπ, ηA=ηA, μ=μ, logσ=logσ)
 end
 
-function negloglik_from_θ(θ, obs_seq, K)
-    hmm = unpack_to_hmm(θ, K)
+function negloglik_from_θ(θ::ComponentVector, obs_seq)
+    hmm = unpack_to_hmm(θ)
     _, loglik = forward(hmm, obs_seq; error_if_not_finite=false)
     return -loglik[1]
 end
 
-K = 3
 θ0 = hmm_to_θ0(hmm_guess)
+ax = getaxes(θ0)
 
-obj(θ) = negloglik_from_θ(θ, obs_seq, K)
+obj(x) = negloglik_from_θ(ComponentVector(x, ax), obs_seq)
 
-result = Optim.optimize(obj, θ0, BFGS(); autodiff=:forward)
-hmm_est2 = unpack_to_hmm(result.minimizer, K)
+result = Optim.optimize(obj, Vector(θ0), BFGS(); autodiff = :forward)
+hmm_est2 = unpack_to_hmm(ComponentVector(result.minimizer, ax))
 
 #= 
 We have now trained an HMM using gradient-based optimization over *all* parameters!
@@ -229,7 +236,7 @@ We have now trained an HMM using gradient-based optimization over *all* paramete
 @test isapprox(hmm_est.init, hmm_est2.init; atol=1e-3) # src
 @test isapprox(hmm_est.trans, hmm_est2.trans; atol=1e-3) # src
 
-for k in 1:K # src
+for k in 1:length(hmm_est.init) # src
     @test isapprox(hmm_est.dists[k].μ, hmm_est2.dists[k].μ; atol=1e-3) # src
     @test isapprox(stddev(hmm_est.dists[k]), stddev(hmm_est2.dists[k]); atol=1e-3) # src
 end # src
