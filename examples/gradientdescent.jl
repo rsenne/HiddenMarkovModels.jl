@@ -37,7 +37,7 @@ mutable struct NormalModel{T}
     logσ::T  # unconstrained parameterization; σ = exp(logσ)
 end
 
-mean(mod::NormalModel) = mod.μ
+model_mean(mod::NormalModel) = mod.μ
 stddev(mod::NormalModel) = exp(mod.logσ)
 
 #= 
@@ -51,13 +51,13 @@ Next, we provide the minimal interface expected by HiddenMarkovModels.jl:
 
 function DensityInterface.logdensityof(mod::NormalModel, obs::T) where {T<:Real}
     s = stddev(mod)
-    return - log(2π) / 2 - log(s) - ((obs - mean(mod)) / s)^2 / 2
+    return - log(2π) / 2 - log(s) - ((obs - model_mean(mod)) / s)^2 / 2
 end
 
 DensityInterface.DensityKind(::NormalModel) = DensityInterface.HasDensity()
 
 function Random.rand(rng::AbstractRNG, mod::NormalModel{T}) where {T}
-    return stddev(mod) * randn(rng, T) + mean(mod)
+    return stddev(mod) * randn(rng, T) + model_mean(mod)
 end
 
 #= 
@@ -71,7 +71,8 @@ const μ_prior = NormalModel(0.0, log(10.0))
 const logσ_prior = NormalModel(log(1.0), log(0.5))
 
 function neglogpost(
-    μ::T, logσ::T,
+    μ::T,
+    logσ::T,
     data::AbstractVector{<:Real},
     weights::AbstractVector{<:Real},
     μ_prior::NormalModel,
@@ -79,7 +80,9 @@ function neglogpost(
 ) where {T<:Real}
     tmp = NormalModel(μ, logσ)
 
-    nll = mapreduce(i -> -weights[i] * logdensityof(tmp, data[i]), +, eachindex(data, weights))
+    nll = mapreduce(
+        i -> -weights[i] * logdensityof(tmp, data[i]), +, eachindex(data, weights)
+    )
 
     nll += -logdensityof(μ_prior, μ)
     nll += -logdensityof(logσ_prior, logσ)
@@ -99,14 +102,12 @@ function neglogpost(
 end
 
 function StatsAPI.fit!(
-    mod::NormalModel,
-    data::AbstractVector{<:Real},
-    weights::AbstractVector{<:Real},
+    mod::NormalModel, data::AbstractVector{<:Real}, weights::AbstractVector{<:Real}
 )
     T = promote_type(typeof(mod.μ), typeof(mod.logσ))
     θ0 = T[T(mod.μ), T(mod.logσ)]
     obj = θ -> neglogpost(θ, data, weights, μ_prior, logσ_prior)
-    result = Optim.optimize(obj, θ0, BFGS(); autodiff = :forward)
+    result = Optim.optimize(obj, θ0, BFGS(); autodiff=:forward)
     mod.μ, mod.logσ = Optim.minimizer(result)
     return mod
 end
@@ -204,15 +205,20 @@ end
 function hmm_to_θ0(hmm::HMM)
     K = length(hmm.init)
 
-    T = promote_type(eltype(hmm.init), eltype(hmm.trans), eltype(hmm.dists[1].μ), eltype(hmm.dists[1].logσ))
-    
+    T = promote_type(
+        eltype(hmm.init),
+        eltype(hmm.trans),
+        eltype(hmm.dists[1].μ),
+        eltype(hmm.dists[1].logσ),
+    )
+
     ηπ = log.(hmm.init .+ eps(T))
     ηA = log.(hmm.trans .+ eps(T))
 
     μ = [hmm.dists[k].μ for k in 1:K]
     logσ = [hmm.dists[k].logσ for k in 1:K]
 
-    return ComponentVector(ηπ=ηπ, ηA=ηA, μ=μ, logσ=logσ)
+    return ComponentVector(; ηπ=ηπ, ηA=ηA, μ=μ, logσ=logσ)
 end
 
 function negloglik_from_θ(θ::ComponentVector, obs_seq)
@@ -226,7 +232,7 @@ ax = getaxes(θ0)
 
 obj(x) = negloglik_from_θ(ComponentVector(x, ax), obs_seq)
 
-result = Optim.optimize(obj, Vector(θ0), BFGS(); autodiff = :forward)
+result = Optim.optimize(obj, Vector(θ0), BFGS(); autodiff=:forward)
 hmm_est2 = unpack_to_hmm(ComponentVector(result.minimizer, ax))
 
 #= 
