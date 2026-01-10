@@ -11,10 +11,12 @@ In this tutorial we explore two ways to use gradient descent when fitting HMMs:
 We will explore both approaches below.
 =#
 
+using ADTypes
 using ComponentArrays
 using DensityInterface
+using ForwardDiff
 using HiddenMarkovModels
-# using HMMTest # src
+using HMMTest # src
 using LinearAlgebra
 using Optim
 using Random
@@ -107,7 +109,7 @@ function StatsAPI.fit!(
     T = promote_type(typeof(mod.μ), typeof(mod.logσ))
     θ0 = T[T(mod.μ), T(mod.logσ)]
     obj = θ -> neglogpost(θ, data, weights, μ_prior, logσ_prior)
-    result = Optim.optimize(obj, θ0, BFGS(); autodiff=:forward)
+    result = Optim.optimize(obj, θ0, BFGS(); autodiff=AutoForwardDiff())
     mod.μ, mod.logσ = Optim.minimizer(result)
     return mod
 end
@@ -232,7 +234,7 @@ ax = getaxes(θ0)
 
 obj(x) = negloglik_from_θ(ComponentVector(x, ax), obs_seq)
 
-result = Optim.optimize(obj, Vector(θ0), BFGS(); autodiff=:forward)
+result = Optim.optimize(obj, Vector(θ0), BFGS(); autodiff=AutoForwardDiff())
 hmm_est2 = unpack_to_hmm(ComponentVector(result.minimizer, ax))
 
 #= 
