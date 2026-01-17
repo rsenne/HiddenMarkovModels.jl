@@ -178,7 +178,6 @@ valid probability distributions via softmax:
 - each row of `A` = `softmax(row_logits)`
 =#
 
-# Stable softmax
 function softmax(v::AbstractVector)
     m = maximum(v)
     ex = exp.(v .- m)
@@ -203,7 +202,6 @@ function unpack_to_hmm(θ::ComponentVector)
     return HMM(π, A, dists)
 end
 
-# Convert a valid HMM into an unconstrained parameter vector θ
 function hmm_to_θ0(hmm::HMM)
     K = length(hmm.init)
 
