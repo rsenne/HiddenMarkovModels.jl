@@ -18,8 +18,8 @@ jobs:
       fail-fast: false
       matrix:
         version:
-          - "1.9"
-          - "1"
+          - "lts"
+          - "1.11"
         test_suite:
           - "Standard"
           - "HMMBase"
