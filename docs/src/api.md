@@ -26,6 +26,7 @@ seq_ends = cumsum(length.(obs_seqs))
 ```@docs
 AbstractHMM
 HMM
+ControlledHMM
 ```
 
 ## Interface
