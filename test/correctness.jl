@@ -242,19 +242,20 @@ end
     seq_ends_glm = cumsum(lens)
 
     control_seq_glm = rand(rng, Uniform(-5.0, 5.0), sum(lens))
-
-    test_coherent_algorithms(
-        rng,
-        hmm_true,
-        control_seq_glm;
-        seq_ends=seq_ends_glm,
-        hmm_guess=hmm_guess,
-        init=false,
-    )
-    test_type_stability(
-        rng, hmm_true, control_seq_glm; seq_ends=seq_ends_glm, hmm_guess=hmm_guess
-    )
-    test_allocations(
-        rng, hmm_true, control_seq_glm; seq_ends=seq_ends_glm, hmm_guess=hmm_guess
-    )
+    if TEST_SUITE != "HMMBase"
+        test_coherent_algorithms(
+            rng,
+            hmm_true,
+            control_seq_glm;
+            seq_ends=seq_ends_glm,
+            hmm_guess=hmm_guess,
+            init=false,
+        )
+        test_type_stability(
+            rng, hmm_true, control_seq_glm; seq_ends=seq_ends_glm, hmm_guess=hmm_guess
+        )
+        test_allocations(
+            rng, hmm_true, control_seq_glm; seq_ends=seq_ends_glm, hmm_guess=hmm_guess
+        )
+    end
 end
