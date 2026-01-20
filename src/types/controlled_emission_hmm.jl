@@ -1,11 +1,10 @@
 """
-    ControlledHMM
+$(TYPEDEF)
 
-An HMM type where the observation distributions depends on an external control input.
+Implementation of a Controlled HMM where control variables only influence the emission models.
 
-# Applicable functions
+$(TYPEDFIELDS)
 """
-
 struct ControlledHMM{
     V<:AbstractVector,
     M<:AbstractMatrix,
