@@ -48,7 +48,7 @@ end
             using Distributions
             using Zygote
             if VERSION >= v"1.10"
-                JET.test_package(HiddenMarkovModels; target_defined_modules=true)
+                JET.test_package(HiddenMarkovModels; target_modules=(HiddenMarkovModels,))
             end
         end
 

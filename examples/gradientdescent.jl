@@ -16,13 +16,13 @@ using ComponentArrays
 using DensityInterface
 using ForwardDiff
 using HiddenMarkovModels
-using HMMTest # src
+using HMMTest #src
 using LinearAlgebra
 using Optim
 using Random
 using StableRNGs
 using StatsAPI
-using Test # src
+using Test #src
 
 rng = StableRNG(42)
 
@@ -178,7 +178,6 @@ valid probability distributions via softmax:
 - each row of `A` = `softmax(row_logits)`
 =#
 
-# Stable softmax
 function softmax(v::AbstractVector)
     m = maximum(v)
     ex = exp.(v .- m)
@@ -203,7 +202,6 @@ function unpack_to_hmm(θ::ComponentVector)
     return HMM(π, A, dists)
 end
 
-# Convert a valid HMM into an unconstrained parameter vector θ
 function hmm_to_θ0(hmm::HMM)
     K = length(hmm.init)
 
@@ -241,10 +239,10 @@ hmm_est2 = unpack_to_hmm(ComponentVector(result.minimizer, ax))
 We have now trained an HMM using gradient-based optimization over *all* parameters!
 =#
 
-@test isapprox(hmm_est.init, hmm_est2.init; atol=1e-3) # src
-@test isapprox(hmm_est.trans, hmm_est2.trans; atol=1e-3) # src
+@test isapprox(hmm_est.init, hmm_est2.init; atol=1e-3) #src
+@test isapprox(hmm_est.trans, hmm_est2.trans; atol=1e-3) #src
 
-for k in 1:length(hmm_est.init) # src
-    @test isapprox(hmm_est.dists[k].μ, hmm_est2.dists[k].μ; atol=1e-3) # src
-    @test isapprox(stddev(hmm_est.dists[k]), stddev(hmm_est2.dists[k]); atol=1e-3) # src
-end # src
+for k in 1:length(hmm_est.init) #src
+    @test isapprox(hmm_est.dists[k].μ, hmm_est2.dists[k].μ; atol=1e-3) #src
+    @test isapprox(stddev(hmm_est.dists[k]), stddev(hmm_est2.dists[k]); atol=1e-3) #src
+end #src
